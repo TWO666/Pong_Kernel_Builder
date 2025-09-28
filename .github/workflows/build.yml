@@ -19,6 +19,9 @@ jobs:
   build-nothing-kernel:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      matrix:
+        build_type: ['make']
 
     steps:
       # # - name: Maximize Build Space
@@ -203,8 +206,6 @@ jobs:
           cd "$CONFIG"
 
           perl -pi -e 's/-dirty//' ./common/scripts/setlocalversion
-          perl -pi -e 's/-maybe-dirty//g' ./build/kernel/kleaf/impl/stamp.bzl
-
           #Set Kernel Timestamp
           perl -pi -e 's{UTS_VERSION="\$\(echo \$UTS_VERSION \$CONFIG_FLAGS \$TIMESTAMP \| cut -b -\$UTS_LEN\)"}{UTS_VERSION="#1 SMP PREEMPT Sun Apr 20 04:20:00 UTC 2025"}' ./common/scripts/mkcompile_h
 
@@ -214,98 +215,29 @@ jobs:
           #Set Kernel Timestamp
           perl -pi -e 's/build-timestamp = \$\(or \$\(KBUILD_BUILD_TIMESTAMP\), \$\(build-timestamp-auto\)\)/build-timestamp = "Sun Apr 20 04:20:00 UTC 2025"/' ./common/init/Makefile
 
-          #Remove Abi Exports and Error
-          rm -rf ./common/android/abi_gki_protected_exports_*
-          perl -pi -e 's/^\s*"protected_exports_list"\s*:\s*"android\/abi_gki_protected_exports_aarch64",\s*$//;' ./common/BUILD.bazel
-
-      - name: Detect Clang Version from Configs
+      - name: Setup Clang Compiler
         run: |
-          KERNEL_PATH="$GITHUB_WORKSPACE/$CONFIG"
-          DEFCONFIG="$KERNEL_PATH/common/arch/arm64/configs/vendor/meteoric_defconfig"
-          BUILDCONFIG="$KERNEL_PATH/common/build.config.gki"
-          CONSTANTSCONFIG="$KERNEL_PATH/common/build.config.constants"
-          CLANG_VERSION=""
-          CLANG_BIN_PATH=""
-          if grep -q '^CONFIG_CLANG_VERSION=' "$DEFCONFIG" 2>/dev/null; then
-            CLANG_VERSION=$(grep '^CONFIG_CLANG_VERSION=' "$DEFCONFIG" 2>/dev/null | head -n1 | cut -d'=' -f2 | tr -d '"' | xargs)
-          elif grep -q '^CLANG_VERSION=' "$BUILDCONFIG" 2>/dev/null; then
-            CLANG_VERSION=$(grep '^CLANG_VERSION=' "$BUILDCONFIG" 2>/dev/null | head -n1 | cut -d'=' -f2 | xargs)
-          elif grep -q '^CLANG_VERSION=' "$CONSTANTSCONFIG" 2>/dev/null; then
-            CLANG_VERSION=$(grep '^CLANG_VERSION=' "$CONSTANTSCONFIG" 2>/dev/null | head -n1 | cut -d'=' -f2 | xargs)
-            CLANG_VERSION="clang-$CLANG_VERSION"
-          else
-            echo "No clang version found in config, will auto-detect in prebuilts."
-          fi
-          if [ -z "$CLANG_VERSION" ]; then
-            if [ -d "$KERNEL_PATH/prebuilts/clang/host/linux-x86" ]; then
-              CLANG_VERSION=$(ls -d "$KERNEL_PATH"/prebuilts/clang/host/linux-x86/clang-r*/ | tail -n 1 | xargs basename)
-              CLANG_BIN_PATH="$KERNEL_PATH/prebuilts/clang/host/linux-x86/$CLANG_VERSION/bin"
-            elif [ -d "$KERNEL_PATH/prebuilts-master/clang/host/linux-x86" ]; then
-              CLANG_VERSION=$(ls -d "$KERNEL_PATH"/prebuilts-master/clang/host/linux-x86/clang-r*/ | tail -n 1 | xargs basename)
-              CLANG_BIN_PATH="$KERNEL_PATH/prebuilts-master/clang/host/linux-x86/$CLANG_VERSION/bin"
-            else
-              CLANG_VERSION="clang"
-              CLANG_BIN_PATH="$KERNEL_PATH/prebuilts/clang/host/linux-x86/$CLANG_VERSION/bin" # dummy
-            fi
-          else
-            if [ -d "$KERNEL_PATH/prebuilts/clang/host/linux-x86" ]; then
-              CLANG_BIN_PATH="$KERNEL_PATH/prebuilts/clang/host/linux-x86/$CLANG_VERSION/bin"
-            else
-              CLANG_BIN_PATH="$KERNEL_PATH/prebuilts-master/clang/host/linux-x86/$CLANG_VERSION/bin"
-            fi
-          fi
-          echo "CLANG_VERSION=$CLANG_VERSION" >> $GITHUB_ENV
-          echo "CLANG_BIN_PATH=$CLANG_BIN_PATH" >> $GITHUB_ENV
+          # Use system Clang since Nothing Phone kernel doesn't have prebuilts
+          sudo apt-get update
+          sudo apt-get install -yq --no-install-recommends clang llvm lld gcc-aarch64-linux-gnu
+
+          # Verify Clang installation
+          clang --version
+          ld.lld --version
+          aarch64-linux-gnu-gcc --version
 
       - name: Build Kernel
         run: |
           KERNEL_PATH="$GITHUB_WORKSPACE/$CONFIG"
-          CLANG_BIN_PATH="${{ env.CLANG_BIN_PATH }}"
-          CLANG_VERSION="${{ env.CLANG_VERSION }}"
-
-          if [ -d "$CLANG_BIN_PATH" ] && [ -x "$CLANG_BIN_PATH/clang" ]; then
-            export PATH="$CLANG_BIN_PATH:$PATH"
-            SELECTED_CLANG="$CLANG_BIN_PATH/clang"
-          elif command -v clang >/dev/null 2>&1; then
-            SELECTED_CLANG="$(command -v clang)"
-            exit 1
-          else
-            exit 1
-          fi
-
-          LLVM_TOOLS="clang ld.lld llvm-ar llvm-objcopy llvm-objdump llvm-nm"
-          MISSING_TOOLS=""
-          for tool in $LLVM_TOOLS; do
-            if ! command -v $tool >/dev/null 2>&1; then
-              MISSING_TOOLS="$MISSING_TOOLS $tool"
-            fi
-          done
-
-          if [ -n "$MISSING_TOOLS" ]; then
-            sudo apt-get update
-            sudo apt-get install -yq --no-install-recommends llvm
-            for tool in $MISSING_TOOLS; do
-              if ! command -v $tool >/dev/null 2>&1; then
-                exit 1
-              fi
-            done
-          fi
-
-          # Set LLVM_IAS for 5.10 kernel
-          USE_LLVM_IAS=true
 
           cd "$KERNEL_PATH/common" || exit 1
 
-          MAKE_ARGS="LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-android- \
-            RUSTC=$KERNEL_PATH/prebuilts/rust/linux-x86/1.73.0b/bin/rustc \
-            PAHOLE=$KERNEL_PATH/prebuilts/kernel-build-tools/linux-x86/bin/pahole \
-            LD=ld.lld HOSTLD=ld.lld"
-          if [[ -v USE_LLVM_IAS ]]; then
-            MAKE_ARGS="LLVM_IAS=1 $MAKE_ARGS"
-          fi
+          # Build arguments for Nothing Phone kernel with system toolchain
+          MAKE_ARGS="LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LD=ld.lld HOSTLD=ld.lld"
 
-          make -j$(nproc --all) O=out $MAKE_ARGS KCFLAGS+="-Wno-error -O2 -flto=thin -fno-stack-protector" vendor/meteoric_defconfig Image Image.gz Image.lz4 || exit 1
-          make -j$(nproc --all) O=out $MAKE_ARGS KCFLAGS+="-Wno-error -O2 -flto=thin -fno-stack-protector" || exit 1
+          # Build the kernel
+          make -j$(nproc --all) O=out $MAKE_ARGS KCFLAGS+="-Wno-error -O2" vendor/meteoric_defconfig || exit 1
+          make -j$(nproc --all) O=out $MAKE_ARGS KCFLAGS+="-Wno-error -O2" Image Image.gz Image.lz4 || exit 1
 
       - name: Create AK3 ZIP
         run: |
@@ -391,7 +323,7 @@ jobs:
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: WKSU-${{ env.KSUVER }}-meteoric-nothing-p2-android12-5.10
+          name: WKSU-${{ env.KSUVER }}-nothing-android12-5.10-make
           path: |
             *.zip
             *.img
