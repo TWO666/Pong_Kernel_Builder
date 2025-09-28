@@ -1,4 +1,4 @@
-name: Build Kernels
+name: Build Nothing Phone Kernels
 
 permissions:
   contents: write
@@ -8,58 +8,28 @@ on:
   workflow_dispatch:
 
 jobs:
-
-  build-a12-5-10:
-    uses: ./.github/workflows/kernel-a12-5-10.yml
+  build-nothing-phone:
+    uses: ./.github/workflows/build.yml
     secrets: inherit
-
-  build-a13-5-10:
-    uses: ./.github/workflows/kernel-a13-5-10.yml
-    secrets: inherit
-
-  build-a13-5-15:
-    uses: ./.github/workflows/kernel-a13-5-15.yml
-    secrets: inherit
-
-  build-a14-5-15:
-    uses: ./.github/workflows/kernel-a14-5-15.yml
-    secrets: inherit
-
-  build-a14-6-1:
-    uses: ./.github/workflows/kernel-a14-6-1.yml
-    secrets: inherit
-
-  build-a15-6-6:
-    uses: ./.github/workflows/kernel-a15-6-6.yml
-    secrets: inherit
+    with:
+      os_patch_level: '2024-12'
+      revision: 'r1'
 
   release:
     runs-on: ubuntu-latest
     needs:
-      - build-a12-5-10
-      - build-a13-5-10
-      - build-a13-5-15
-      - build-a14-5-15
-      - build-a14-6-1
-      - build-a15-6-6
+      - build-nothing-phone
 
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_NAME: "GKI Kernels With WKSU & SUSFS v1.5.10"
+      RELEASE_NAME: 'Nothing Phone Kernels With WKSU & SUSFS v1.5.10'
       RELEASE_BODY:
     steps:
       - name: Maximize Build Space
         uses: AdityaGarg8/remove-unwanted-software@v5
         with:
-          # remove-dotnet: 'true'          # Frees ~2 GB
-          # remove-android: 'true'         # Frees ~9 GB
-          # remove-haskell: 'true'         # Frees ~5.2 GB
-          # remove-codeql: 'true'          # Frees ~5.4 GB
-          # remove-docker-images: 'true'   # Frees ~3.2 GB
-          # remove-large-packages: 'true'  # Frees ~3.1 GB
-          remove-swapfile: 'true'        # Frees ~4 GB
-          # remove-cached-tools: 'false'   # Avoid unless confirmed safe
-          verbose: 'true'                # Enable detailed logging
+          remove-swapfile: 'true' # Frees ~4 GB
+          verbose: 'true' # Enable detailed logging
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -68,29 +38,19 @@ jobs:
         run: |
           GITLAB_OWNER="simonpunk"
           GITLAB_REPO="susfs4ksu"
-          
-          declare -A BRANCH_MAP=(
-            ["gki_android12_5_10"]="gki-android12-5.10"
-            ["gki_android13_5_10"]="gki-android13-5.10"
-            ["gki_android13_5_15"]="gki-android13-5.15"
-            ["gki_android14_5_15"]="gki-android14-5.15"
-            ["gki_android14_6_1"]="gki-android14-6.1"
-            ["gki_android15_6_6"]="gki-android15-6.6"
-          )
-          
-          for var_name in "${!BRANCH_MAP[@]}"; do
-            branch_name="${BRANCH_MAP[$var_name]}"
-            COMMIT_HASH=$(git ls-remote https://gitlab.com/$GITLAB_OWNER/$GITLAB_REPO.git refs/heads/$branch_name | awk '{ print $1 }')
-            
-            if [[ -n "$COMMIT_HASH" ]]; then
-              COMMIT_URL="https://gitlab.com/$GITLAB_OWNER/$GITLAB_REPO/-/commit/$COMMIT_HASH"
-              echo "$branch_name Commit: $COMMIT_HASH"
-              echo "$branch_name Commit URL: $COMMIT_URL"
-              
-              echo "COMMIT_HASH_${var_name}=$COMMIT_HASH" >> "$GITHUB_ENV"
-              echo "COMMIT_URL_${var_name}=$COMMIT_URL" >> "$GITHUB_ENV"
-            fi
-          done
+
+          # Get SUSFS commit hash for android12-5.10
+          BRANCH_NAME="gki-android12-5.10"
+          COMMIT_HASH=$(git ls-remote https://gitlab.com/$GITLAB_OWNER/$GITLAB_REPO.git refs/heads/$BRANCH_NAME | awk '{ print $1 }')
+
+          if [[ -n "$COMMIT_HASH" ]]; then
+            COMMIT_URL="https://gitlab.com/$GITLAB_OWNER/$GITLAB_REPO/-/commit/$COMMIT_HASH"
+            echo "$BRANCH_NAME Commit: $COMMIT_HASH"
+            echo "$BRANCH_NAME Commit URL: $COMMIT_URL"
+
+            echo "COMMIT_HASH_SUSFS=$COMMIT_HASH" >> "$GITHUB_ENV"
+            echo "COMMIT_URL_SUSFS=$COMMIT_URL" >> "$GITHUB_ENV"
+          fi
 
       - name: Get KernelSU variant refs and links
         run: |
@@ -100,20 +60,26 @@ jobs:
           echo "WKSU_REF=$WKSU_REF" >> $GITHUB_ENV
           echo "WKSU_URL=$WKSU_URL" >> $GITHUB_ENV
 
+          # Get Nothing Phone kernel commit
+          NOTHING_REF=$(git ls-remote "https://github.com/MiguVT/kernel_nothing_sm8475_github_actions.git" refs/heads/clean | awk '{print $1}')
+          NOTHING_URL="https://github.com/MiguVT/kernel_nothing_sm8475_github_actions/commit/$NOTHING_REF"
+          echo "NOTHING_REF=$NOTHING_REF" >> $GITHUB_ENV
+          echo "NOTHING_URL=$NOTHING_URL" >> $GITHUB_ENV
+
       - name: Generate and Create New Tag
         run: |
-            LATEST_TAG=$(gh api repos/${{ github.repository }}/tags --jq '.[0].name')
-            if [ -z "$LATEST_TAG" ]; then
-              LATEST_TAG="v1.5.10-r0"
-            fi
-            
-            NEW_TAG=$(echo "$LATEST_TAG" | awk -F'-r' '{suffix=$2; if (!suffix) suffix=0; suffix++; printf "%s-r%d", $1, suffix}')
-    
-            echo "New tag: $NEW_TAG"
-            echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_ENV
+          LATEST_TAG=$(gh api repos/${{ github.repository }}/tags --jq '.[0].name')
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v1.5.10-r0"
+          fi
 
-            git tag $NEW_TAG
-            git push origin $NEW_TAG
+          NEW_TAG=$(echo "$LATEST_TAG" | awk -F'-r' '{suffix=$2; if (!suffix) suffix=0; suffix++; printf "%s-r%d", $1, suffix}')
+
+          echo "New tag: $NEW_TAG"
+          echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_ENV
+
+          git tag $NEW_TAG
+          git push origin $NEW_TAG
 
       - name: Download Artifacts
         uses: actions/download-artifact@v5
@@ -124,12 +90,16 @@ jobs:
       - name: Set release body
         run: |
           cat << 'EOF' > release_body.md
-      
+
           **IMPORTANT DISCLAIMER**
           This software is provided for testing and educational purposes only. Use at your own risk.
           The developers are not responsible for any damage, data loss, or issues that may occur.
           Please ensure you have proper backups before installation.
-      
+
+          **Device Compatibility**
+          -> **Nothing Phone specific kernels** - Android 12 5.10 based
+          -> Built from Nothing Phone kernel source repository
+
           Features:
           -> Wild KSU
           -> Multi Manager Support for WKSU Manager & KernelSU-Next Manager (Only Install One)
@@ -138,38 +108,31 @@ jobs:
           -> Magic Mount Support
           -> Simple Maphide for LineageOS Detections
           -> Futile Maphide for jit-zygote-cache Detections
-          -> Ptrace Patch Support for Older Kernels (<5.16)
           -> IPSet Support for Advanced Network Filtering
           -> Wireguard Support
           -> BBR v1 Support
-      
+
           Build Types:
           -> **Make Build**: Built using traditional make
           -> **Normal Build**: Built using Bazel or build.sh
           -> **For avbroot users**: Try the normal build from CI to get proper KMI (Kernel Module Interface) compatibility
 
           Notes:
-          -> SUS SU Mode 2 will show as disabled or not compatble due to non-kprobe hooks and is not needed anymore!
+          -> SUS SU Mode 2 will show as disabled or not compatible due to non-kprobe hooks and is not needed anymore!
           -> Official Kernel Flasher is broken with latest susfs, try https://github.com/fatalcoder524/KernelFlasher/
-          -> **Warning**: boot.img files may not boot on some Android 16 devices
-      
-          Module: 
+          -> **Device specific**: These kernels are built specifically for Nothing Phone devices
+
+          Module:
           -> https://github.com/sidex15/ksu_module_susfs
-      
+
           Managers:
           -> WKSU: https://t.me/Wild_Kernels/26618
           -> Next: https://github.com/KernelSU-Next/KernelSU-Next
-          
+
           Commit Hashes (at the time of release):
           -> WKSU: [${{ env.WKSU_REF }}](${{ env.WKSU_URL }})
-
-          -> SUSFS4KSU: 
-            -> gki-android12-5.10: [${{ env.COMMIT_HASH_gki_android12_5_10 }}](${{ env.COMMIT_URL_gki_android12_5_10 }})
-            -> gki-android13-5.10: [${{ env.COMMIT_HASH_gki_android13_5_10 }}](${{ env.COMMIT_URL_gki_android13_5_10 }})
-            -> gki-android13-5.15: [${{ env.COMMIT_HASH_gki_android13_5_15 }}](${{ env.COMMIT_URL_gki_android13_5_15 }})
-            -> gki-android14-5.15: [${{ env.COMMIT_HASH_gki_android14_5_15 }}](${{ env.COMMIT_URL_gki_android14_5_15 }})
-            -> gki-android14-6.1: [${{ env.COMMIT_HASH_gki_android14_6_1 }}](${{ env.COMMIT_URL_gki_android14_6_1 }})
-            -> gki-android15-6.6: [${{ env.COMMIT_HASH_gki_android15_6_6 }}](${{ env.COMMIT_URL_gki_android15_6_6 }})
+          -> Nothing Phone Kernel: [${{ env.NOTHING_REF }}](${{ env.NOTHING_URL }})
+          -> SUSFS4KSU (gki-android12-5.10): [${{ env.COMMIT_HASH_SUSFS }}](${{ env.COMMIT_URL_SUSFS }})
           EOF
 
       - name: Create GitHub Release
@@ -177,7 +140,7 @@ jobs:
         with:
           tag_name: ${{ env.NEW_TAG }}
           prerelease: false
-          files: ""
+          files: ''
           name: ${{ env.RELEASE_NAME }}
           body_path: release_body.md
 
@@ -195,15 +158,15 @@ jobs:
         run: |
           echo "GitHub release created with the following files:"
           ls ./downloaded-artifacts/**/*
-            
+
       - name: Send Telegram Notification
         run: |
           curl -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
             -F chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
             -F message_thread_id="${{ secrets.TELEGRAM_TOPIC_ID_GKI }}" \
             -F text="
-            🌽 *New Kernel Release Uploaded*  
-            📦 *Repository:* [${{ github.repository }}](https://github.com/${{ github.repository }})  
-            ✏️ *Commit:* [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})  
+            🌽 *New Kernel Release Uploaded*
+            📦 *Repository:* [${{ github.repository }}](https://github.com/${{ github.repository }})
+            ✏️ *Commit:* [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
             [🔗 View GitHub Release](https://github.com/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }})" \
             -F parse_mode="Markdown"
