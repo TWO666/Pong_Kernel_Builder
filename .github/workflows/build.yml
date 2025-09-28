@@ -19,9 +19,6 @@ jobs:
   build-nothing-kernel:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    strategy:
-      matrix:
-        build_type: ['make', 'normal']
 
     steps:
       # # - name: Maximize Build Space
@@ -211,12 +208,8 @@ jobs:
           #Set Kernel Timestamp
           perl -pi -e 's{UTS_VERSION="\$\(echo \$UTS_VERSION \$CONFIG_FLAGS \$TIMESTAMP \| cut -b -\$UTS_LEN\)"}{UTS_VERSION="#1 SMP PREEMPT Sun Apr 20 04:20:00 UTC 2025"}' ./common/scripts/mkcompile_h
 
-          #Set Kernel Name for Nothing Phone Android 12 5.10
-          if [ "${{ matrix.build_type }}" = "make" ]; then
-            perl -0777 -pi -e 's/(echo "\$res")(?!.*echo "\$res")/echo "\-android12-Wild"/s' ./common/scripts/setlocalversion
-          elif [ "${{ matrix.build_type }}" = "normal" ]; then
-            perl -0777 -pi -e 's/(echo "\$res")(?!.*echo "\$res")/echo "\$res-Wild"/s' ./common/scripts/setlocalversion
-          fi
+          #Set Kernel Name for Nothing Phone Android 12 5.10 (make build)
+          perl -0777 -pi -e 's/(echo "\$res")(?!.*echo "\$res")/echo "\-android12-Wild"/s' ./common/scripts/setlocalversion
 
           #Set Kernel Timestamp
           perl -pi -e 's/build-timestamp = \$\(or \$\(KBUILD_BUILD_TIMESTAMP\), \$\(build-timestamp-auto\)\)/build-timestamp = "Sun Apr 20 04:20:00 UTC 2025"/' ./common/init/Makefile
@@ -225,21 +218,7 @@ jobs:
           rm -rf ./common/android/abi_gki_protected_exports_*
           perl -pi -e 's/^\s*"protected_exports_list"\s*:\s*"android\/abi_gki_protected_exports_aarch64",\s*$//;' ./common/BUILD.bazel
 
-      - name: Build
-        if: ${{ matrix.build_type == 'normal' }}
-        run: |
-          set -e
-          set -x
-          cd "$CONFIG"
-          echo "Building the kernel..."
-          if [ -f "build/build.sh" ]; then
-            LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh || exit 1
-          else
-            tools/bazel build --config=fast --lto=thin //common:kernel_aarch64_dist || exit 1
-          fi
-
       - name: Detect Clang Version from Configs
-        if: ${{ matrix.build_type == 'make' }}
         run: |
           KERNEL_PATH="$GITHUB_WORKSPACE/$CONFIG"
           DEFCONFIG="$KERNEL_PATH/common/arch/arm64/configs/vendor/meteoric_defconfig"
@@ -279,7 +258,6 @@ jobs:
           echo "CLANG_BIN_PATH=$CLANG_BIN_PATH" >> $GITHUB_ENV
 
       - name: Build Kernel
-        if: ${{ matrix.build_type == 'make' }}
         run: |
           KERNEL_PATH="$GITHUB_WORKSPACE/$CONFIG"
           CLANG_BIN_PATH="${{ env.CLANG_BIN_PATH }}"
@@ -331,15 +309,11 @@ jobs:
 
       - name: Create AK3 ZIP
         run: |
-          # Try different Image locations based on build type
+          # Copy Image from make build output
           if [ -f "$CONFIG/common/out/arch/arm64/boot/Image" ]; then
             cp $CONFIG/common/out/arch/arm64/boot/Image AnyKernel3/Image
-          elif [ -f "./$CONFIG/out/nothing-android12-5.10/dist/Image" ]; then
-            cp ./$CONFIG/out/nothing-android12-5.10/dist/Image AnyKernel3/Image
-          elif [ -f "./$CONFIG/bazel-bin/common/kernel_aarch64/Image" ]; then
-            cp ./$CONFIG/bazel-bin/common/kernel_aarch64/Image AnyKernel3/Image
           else
-            echo "Error: Image file not found in any expected location"
+            echo "Error: Image file not found in expected location"
             exit 1
           fi
 
@@ -349,8 +323,7 @@ jobs:
           ZIP_NAME="WKSU-$KSUVER-nothing-android12-5.10-AnyKernel3.zip"
           zip -r "../$ZIP_NAME" ./*
 
-      - name: Create Bootimgs Folder and Copy Images (Make Build)
-        if: ${{ matrix.build_type == 'make' }}
+      - name: Create Bootimgs Folder and Copy Images
         run: |
           mkdir bootimgs
 
@@ -361,29 +334,6 @@ jobs:
           cp $CONFIG/common/out/arch/arm64/boot/Image ./
           cp $CONFIG/common/out/arch/arm64/boot/Image.gz ./
           cp $CONFIG/common/out/arch/arm64/boot/Image.lz4 ./
-
-      - name: Create Bootimgs Folder and Copy Images (Normal Build)
-        if: ${{ matrix.build_type == 'normal' }}
-        run: |
-          mkdir bootimgs
-
-          echo "Creating bootimgs folder and copying images..."
-          # Try different Image locations based on kernel structure
-          if [ -f "./$CONFIG/out/android12-5.10/dist/Image" ]; then
-            cp ./$CONFIG/out/android12-5.10/dist/Image ./bootimgs
-            cp ./$CONFIG/out/android12-5.10/dist/Image.lz4 ./bootimgs
-            cp ./$CONFIG/out/android12-5.10/dist/Image ./
-            cp ./$CONFIG/out/android12-5.10/dist/Image.lz4 ./
-          elif [ -f "./$CONFIG/bazel-bin/common/kernel_aarch64/Image" ]; then
-            cp ./$CONFIG/bazel-bin/common/kernel_aarch64/Image ./bootimgs
-            cp ./$CONFIG/bazel-bin/common/kernel_aarch64/Image.lz4 ./bootimgs
-            cp ./$CONFIG/bazel-bin/common/kernel_aarch64/Image ./
-            cp ./$CONFIG/bazel-bin/common/kernel_aarch64/Image.lz4 ./
-          fi
-
-          # Create gzip of the Image file
-          gzip -n -k -f -9 ./Image > ./Image.gz
-          gzip -n -k -f -9 ./Image > ./bootimgs/Image.gz
 
       # Android 14/15 image creation not needed for Nothing Phone Android 12 kernel
 
@@ -441,7 +391,7 @@ jobs:
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: WKSU-${{ env.KSUVER }}-nothing-android12-5.10-${{ matrix.build_type }}
+          name: WKSU-${{ env.KSUVER }}-meteoric-nothing-p2-android12-5.10
           path: |
             *.zip
             *.img
