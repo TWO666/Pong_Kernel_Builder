@@ -83,10 +83,9 @@ jobs:
           git push origin $NEW_TAG
 
       - name: Download Artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v4
         with:
           path: ./downloaded-artifacts
-          pattern: '*-make'
 
       - name: Set release body
         run: |
@@ -98,13 +97,14 @@ jobs:
           Please ensure you have proper backups before installation.
 
           **Device Compatibility**
-          -> **Nothing Phone specific kernels** - Android 12 5.10 based
+          -> **Nothing Phone 2** - Android 12 5.10 based kernels
           -> Built from Nothing Phone kernel source repository
+          -> **Flash using OrangeFox with the AnyKernel3 ZIP file**
 
           Features:
           -> Wild KSU
-          -> Multi Manager Support for WKSU Manager & KernelSU-Next Manager (Only Install One)
-          -> SUSFS ඞ v1.5.10
+          -> Multi Manager Support for WKSU Manager & KernelSU-Next Manager (Only Install One - I recommend WKSU Manager)
+          -> SUSFS ඞ
           -> Scope-Minimized Manual hooks v1.4
           -> Magic Mount Support
           -> Simple Maphide for LineageOS Detections
@@ -113,15 +113,15 @@ jobs:
           -> Wireguard Support
           -> BBR v1 Support
 
-          Build Types:
-          -> **Make Build**: Built using traditional make
-          -> **Normal Build**: Built using Bazel or build.sh
-          -> **For avbroot users**: Try the normal build from CI to get proper KMI (Kernel Module Interface) compatibility
+          **Installation Instructions:**
+          -> Use **OrangeFox Recovery** to flash the **AnyKernel3.zip** file
+          -> Boot images (.img files) are provided for advanced users only
+          -> **Recommended**: Flash the AnyKernel3.zip for best compatibility
 
           Notes:
           -> SUS SU Mode 2 will show as disabled or not compatible due to non-kprobe hooks and is not needed anymore!
-          -> Official Kernel Flasher is broken with latest susfs, try https://github.com/fatalcoder524/KernelFlasher/
-          -> **Device specific**: These kernels are built specifically for Nothing Phone devices
+          -> Official Kernel Flasher is broken with latest susfs, try https://github.com/fatalcoder524/KernelFlasher/ or better use OrangeFox
+          -> **Device specific**: These kernels are built specifically for Nothing Phone 2
 
           Module:
           -> https://github.com/sidex15/ksu_module_susfs
@@ -147,27 +147,25 @@ jobs:
 
       - name: Upload Release Assets
         run: |
-          for file in ./downloaded-artifacts/*/*; do
-            if [ -d "$file" ]; then
-              continue
-            fi
+          # Find all files in downloaded artifacts
+          find ./downloaded-artifacts -type f -name "*.zip" -o -name "*.img" | while read -r file; do
             echo "Uploading $file..."
-            gh release upload ${{ env.NEW_TAG }} "$file"
+            gh release upload ${{ env.NEW_TAG }} "$file" || echo "Failed to upload $file"
           done
 
       - name: Display Files Uploaded
         run: |
           echo "GitHub release created with the following files:"
-          ls ./downloaded-artifacts/**/*
+          find ./downloaded-artifacts -type f | sort
 
-      - name: Send Telegram Notification
-        run: |
-          curl -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-            -F chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-            -F message_thread_id="${{ secrets.TELEGRAM_TOPIC_ID_GKI }}" \
-            -F text="
-            🌽 *New Kernel Release Uploaded*
-            📦 *Repository:* [${{ github.repository }}](https://github.com/${{ github.repository }})
-            ✏️ *Commit:* [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
-            [🔗 View GitHub Release](https://github.com/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }})" \
-            -F parse_mode="Markdown"
+      # - name: Send Telegram Notification
+      #   run: |
+      #     curl -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+      #       -F chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+      #       -F message_thread_id="${{ secrets.TELEGRAM_TOPIC_ID_GKI }}" \
+      #       -F text="
+      #       🌽 *New Kernel Release Uploaded*
+      #       📦 *Repository:* [${{ github.repository }}](https://github.com/${{ github.repository }})
+      #       ✏️ *Commit:* [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+      #       [🔗 View GitHub Release](https://github.com/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }})" \
+      #       -F parse_mode="Markdown"
