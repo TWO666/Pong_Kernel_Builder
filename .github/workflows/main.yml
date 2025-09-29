@@ -12,8 +12,9 @@ jobs:
     uses: ./.github/workflows/build.yml
     secrets: inherit
     with:
-      os_patch_level: '2024-12'
+      os_patch_level: 'lts'
       revision: 'r1'
+      sub_level: 'X'
 
   release:
     runs-on: ubuntu-latest

@@ -9,11 +9,15 @@ on:
       os_patch_level:
         required: false
         type: string
-        default: '2024-12'
+        default: 'lts'
       revision:
         required: false
         type: string
         default: 'r1'
+      sub_level:
+        required: false
+        type: string
+        default: 'X'
 
 jobs:
   build-nothing-kernel:
@@ -89,6 +93,26 @@ jobs:
           git clone --depth=1 -b clean https://github.com/MiguVT/kernel_nothing_sm8475_github_actions.git common
 
           echo "Kernel source cloned successfully from Nothing Phone repository"
+
+      - name: Extract Actual Sublevel for LTS Builds
+        if: inputs.sub_level == 'X'
+        run: |
+          cd "$CONFIG/common"
+
+          if [ -f "Makefile" ]; then
+            ACTUAL_SUBLEVEL=$(grep '^SUBLEVEL = ' Makefile | awk '{print $3}')
+
+            if [ -n "$ACTUAL_SUBLEVEL" ]; then
+              echo "ACTUAL_SUBLEVEL=$ACTUAL_SUBLEVEL" >> $GITHUB_ENV
+              echo "Found actual sublevel: $ACTUAL_SUBLEVEL"
+            else
+              echo "ACTUAL_SUBLEVEL=X" >> $GITHUB_ENV
+              echo "Could not extract sublevel, using X"
+            fi
+          else
+            echo "ACTUAL_SUBLEVEL=X" >> $GITHUB_ENV
+            echo "Makefile not found, using X"
+          fi
 
       # Sublevel extraction not needed for fixed Nothing Phone kernel
 
@@ -251,8 +275,14 @@ jobs:
 
           cd AnyKernel3
 
-          # Fixed naming for Nothing Phone kernel
-          ZIP_NAME="WKSU-$KSUVER-nothing-android12-5.10-AnyKernel3.zip"
+          # Use actual sublevel for LTS builds if available
+          SUBLEVEL_FOR_NAME="${{ inputs.sub_level }}"
+          if [ -n "${{ env.ACTUAL_SUBLEVEL }}" ] && [ "${{ env.ACTUAL_SUBLEVEL }}" != "X" ]; then
+            SUBLEVEL_FOR_NAME="${{ env.ACTUAL_SUBLEVEL }}"
+          fi
+
+          # Fixed naming for Nothing Phone kernel with LTS support
+          ZIP_NAME="WKSU-$KSUVER-nothing-android12-5.10.$SUBLEVEL_FOR_NAME-${{ inputs.os_patch_level }}-AnyKernel3.zip"
           zip -r "../$ZIP_NAME" ./*
 
       - name: Create Bootimgs Folder and Copy Images
@@ -274,11 +304,17 @@ jobs:
           echo "Changing to configuration directory: $CONFIG..."
           cd bootimgs
 
+          # Prepare sublevel for naming
+          SUBLEVEL_FOR_NAME="${{ inputs.sub_level }}"
+          if [ -n "${{ env.ACTUAL_SUBLEVEL }}" ] && [ "${{ env.ACTUAL_SUBLEVEL }}" != "X" ]; then
+            SUBLEVEL_FOR_NAME="${{ env.ACTUAL_SUBLEVEL }}"
+          fi
+
           # Fixed naming for Nothing Phone kernel
           KERNEL_NAME="nothing-android12-5.10"
 
           GKI_URL=https://dl.google.com/android/gki/gki-certified-boot-android12-5.10-"${{ inputs.os_patch_level || '2024-12' }}"_"${{ inputs.revision || 'r1' }}".zip
-          FALLBACK_URL=https://dl.google.com/android/gki/gki-certified-boot-android12-5.10-2024-12_r1.zip
+          FALLBACK_URL=https://dl.google.com/android/gki/gki-certified-boot-android12-5.10-2025-06_r1.zip
 
           # Check if the GKI URL is available
           echo "Checking if GKI kernel URL is reachable: $GKI_URL"
@@ -306,24 +342,24 @@ jobs:
           echo "Building boot.img"
           $MKBOOTIMG --header_version 4 --kernel Image --output boot.img --ramdisk out/ramdisk --os_version 12.0.0 --os_patch_level "${{ inputs.os_patch_level || '2024-12' }}"
           $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
-          cp ./boot.img ../WKSU-$KSUVER-nothing-android12-5.10-boot.img
+          cp ./boot.img ../WKSU-$KSUVER-nothing-android12-5.10.$SUBLEVEL_FOR_NAME-${{ inputs.os_patch_level }}-boot.img
 
           echo "Building boot-gz.img"
           $MKBOOTIMG --header_version 4 --kernel Image.gz --output boot-gz.img --ramdisk out/ramdisk --os_version 12.0.0 --os_patch_level "${{ inputs.os_patch_level || '2024-12' }}"
           $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-gz.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
-          cp ./boot-gz.img ../WKSU-$KSUVER-nothing-android12-5.10-boot-gz.img
+          cp ./boot-gz.img ../WKSU-$KSUVER-nothing-android12-5.10.$SUBLEVEL_FOR_NAME-${{ inputs.os_patch_level }}-boot-gz.img
 
           echo "Building boot-lz4.img"
           $MKBOOTIMG --header_version 4 --kernel Image.lz4 --output boot-lz4.img --ramdisk out/ramdisk --os_version 12.0.0 --os_patch_level "${{ inputs.os_patch_level || '2024-12' }}"
           $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-lz4.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
-          cp ./boot-lz4.img ../WKSU-$KSUVER-nothing-android12-5.10-boot-lz4.img
+          cp ./boot-lz4.img ../WKSU-$KSUVER-nothing-android12-5.10.$SUBLEVEL_FOR_NAME-${{ inputs.os_patch_level }}-boot-lz4.img
 
       # Android 13/14/15 boot image build not needed for Nothing Phone Android 12 kernel
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: WKSU-${{ env.KSUVER }}-nothing-android12-5.10-make
+          name: WKSU-${{ env.KSUVER }}-nothing-android12-5.10.${{ env.ACTUAL_SUBLEVEL || inputs.sub_level }}-${{ inputs.os_patch_level }}-make
           path: |
             *.zip
             *.img
