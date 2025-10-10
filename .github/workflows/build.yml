@@ -297,6 +297,31 @@ jobs:
         run: |
           mkdir bootimgs
 
+          # Copy kernel images to bootimgs directory
+          if [ -f "$CONFIG/common/out/arch/arm64/boot/Image" ]; then
+            cp $CONFIG/common/out/arch/arm64/boot/Image bootimgs/Image
+            echo "Copied Image to bootimgs/"
+          else
+            echo "Error: Image file not found"
+            exit 1
+          fi
+
+          if [ -f "$CONFIG/common/out/arch/arm64/boot/Image.gz" ]; then
+            cp $CONFIG/common/out/arch/arm64/boot/Image.gz bootimgs/Image.gz
+            echo "Copied Image.gz to bootimgs/"
+          else
+            echo "Error: Image.gz file not found"
+            exit 1
+          fi
+
+          if [ -f "$CONFIG/common/out/arch/arm64/boot/Image.lz4" ]; then
+            cp $CONFIG/common/out/arch/arm64/boot/Image.lz4 bootimgs/Image.lz4
+            echo "Copied Image.lz4 to bootimgs/"
+          else
+            echo "Error: Image.lz4 file not found"
+            exit 1
+          fi
+
       - name: Android 12 boot image build script (Nothing Phone)
         run: |
           echo "Changing to configuration directory: $CONFIG..."
