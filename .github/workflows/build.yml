@@ -142,19 +142,19 @@ jobs:
           # Apply KSU integration patches
           cd ./Wild_KSU
           cp ../../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch .
-          #cp ../../kernel_patches/wild/susfs_fix_patches/v1.5.9/10_enable_susfs_for_ksu.patch ./
+          #cp ../../kernel_patches/wild/susfs_fix_patches/v1.5.10/10_enable_susfs_for_ksu.patch ./
           patch -p1 --forward < 10_enable_susfs_for_ksu.patch || true
 
           # Apply compatibility fixes
-          cp ../../kernel_patches/wild/susfs_fix_patches/v1.5.9/fix_core_hook.c.patch ./
+          cp ../../kernel_patches/wild/susfs_fix_patches/v1.5.10/fix_core_hook.c.patch ./
           patch -p1 --forward --fuzz=3 < fix_core_hook.c.patch
 
           # Skipping fix_rules.c.patch as it's not needed for Nothing Phone Android 12 5.10
 
-          cp ../../kernel_patches/wild/susfs_fix_patches/v1.5.9/fix_sucompat.c.patch ./
+          cp ../../kernel_patches/wild/susfs_fix_patches/v1.5.10/fix_sucompat.c.patch ./
           patch -p1 --forward < fix_sucompat.c.patch
 
-          cp ../../kernel_patches/wild/susfs_fix_patches/v1.5.9/fix_kernel_compat.c.patch ./
+          cp ../../kernel_patches/wild/susfs_fix_patches/v1.5.10/fix_kernel_compat.c.patch ./
           patch -p1 --forward < fix_kernel_compat.c.patch
 
       - name: Getting KernelSU Version
@@ -164,6 +164,14 @@ jobs:
           COMMIT_COUNT=$(/usr/bin/git rev-list --count HEAD)
           KSU_VERSION=$(expr $COMMIT_COUNT "+" $BASE_VERSION)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+
+      - name: Add BBG
+        run: |
+          cd "$CONFIG"
+          echo "Adding BBG..."
+          wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
+          echo "CONFIG_BBG=y" >> common/arch/arm64/configs/gki_defconfig
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/landlock/landlock,baseband_guard/ } }' common/security/Kconfig
 
       - name: Apply Hooks Patches
         run: |
@@ -288,16 +296,6 @@ jobs:
       - name: Create Bootimgs Folder and Copy Images
         run: |
           mkdir bootimgs
-
-          echo "Creating bootimgs folder and copying images..."
-          cp $CONFIG/common/out/arch/arm64/boot/Image ./bootimgs
-          cp $CONFIG/common/out/arch/arm64/boot/Image.gz ./bootimgs
-          cp $CONFIG/common/out/arch/arm64/boot/Image.lz4 ./bootimgs
-          cp $CONFIG/common/out/arch/arm64/boot/Image ./
-          cp $CONFIG/common/out/arch/arm64/boot/Image.gz ./
-          cp $CONFIG/common/out/arch/arm64/boot/Image.lz4 ./
-
-      # Android 14/15 image creation not needed for Nothing Phone Android 12 kernel
 
       - name: Android 12 boot image build script (Nothing Phone)
         run: |
