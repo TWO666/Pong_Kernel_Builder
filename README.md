@@ -116,7 +116,7 @@ For KernelSU setup, please follow the official guide:
 ### 🔐 **Root & Security Features:**
 
 - **Wild KernelSU**: Enhanced root solution with multi-manager support
-- **SUSFS v1.5.10**: Advanced root hiding capabilities
+- **SUSFS v1.5.12**: Advanced root hiding capabilities
 - **Scope-Minimized Manual hooks v1.4**: Improved compatibility
 - **Magic Mount Support**: Advanced mounting capabilities
 - **Simple & Futile Maphide**: Detection bypassing

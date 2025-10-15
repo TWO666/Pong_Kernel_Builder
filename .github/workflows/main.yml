@@ -5,6 +5,16 @@ permissions:
   actions: write
 
 on:
+  # push:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - '.github/workflows/**'
+  # pull_request:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:
@@ -23,8 +33,8 @@ jobs:
 
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_NAME: 'Nothing Phone Kernels With WKSU & SUSFS v1.5.10'
-      RELEASE_BODY:
+      RELEASE_NAME: 'Nothing Phone Kernels With WKSU & SUSFS v1.5.12'
+      RELEASE_BODY: ''
     steps:
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@c28619d8999a147d5e09c1199f84ff6af6ad5794
@@ -75,7 +85,7 @@ jobs:
         run: |
           LATEST_TAG=$(gh api repos/${{ github.repository }}/tags --jq '.[0].name')
           if [ -z "$LATEST_TAG" ]; then
-            LATEST_TAG="v1.5.11-r0"
+            LATEST_TAG="v1.5.1-r0"
           fi
 
           NEW_TAG=$(echo "$LATEST_TAG" | awk -F'-r' '{suffix=$2; if (!suffix) suffix=0; suffix++; printf "%s-r%d", $1, suffix}')
@@ -151,10 +161,16 @@ jobs:
 
       - name: Upload Release Assets
         run: |
-          # Find all files in downloaded artifacts
-          find ./downloaded-artifacts -type f -name "*.zip" -o -name "*.img" | while read -r file; do
-            echo "Uploading $file..."
-            gh release upload ${{ env.NEW_TAG }} "$file" || echo "Failed to upload $file"
+          for dir in ./downloaded-artifacts/*/; do
+            if [ -d "$dir" ]; then
+              # Upload only AnyKernel3 ZIP files (created in build.yml)
+              for zipfile in "$dir"/*-AnyKernel3.zip; do
+                if [ -f "$zipfile" ]; then
+                  echo "Uploading $(basename "$zipfile")..."
+                  gh release upload ${{ env.NEW_TAG }} "$zipfile"
+                fi
+              done
+            fi
           done
 
       - name: Display Files Uploaded

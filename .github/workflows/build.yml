@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 120
     strategy:
       matrix:
-        build_type: ['make']
+        apply_susfs_v1_5_9: ['v1.5.9', 'v1.5.12']
 
     steps:
       # # - name: Maximize Build Space
@@ -84,6 +84,13 @@ jobs:
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$SUSFS_BRANCH"
           git clone https://github.com/WildKernels/kernel_patches.git
 
+          # Checkout specific commits for SUSFS v1.5.9 if enabled
+          if [ "${{ matrix.apply_susfs_v1_5_9 }}" = "v1.5.9" ]; then
+            cd susfs4ksu
+            git checkout 6f42c0e24e35a6fa0fc43051a5f1e7dfe568e8c2
+            cd ..
+          fi
+
       - name: Clone Kernel Source
         run: |
           mkdir -p "$CONFIG"
@@ -134,28 +141,33 @@ jobs:
           # Apply core SUSFS patches
           cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch ./common/
           cd common
-          patch -p1 --forward < 50_add_susfs_in_gki-android12-5.10.patch
+          patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch || true
           cd ..
           cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
           cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
 
+          if [ "${{ matrix.apply_susfs_v1_5_9 }}" = "v1.5.9" ]; then
+            SUSFS_VERSION="1.5.9"
+          else
+            SUSFS_VERSION="1.5.12"
+          fi
           # Apply KSU integration patches
           cd ./Wild_KSU
           cp ../../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch .
-          #cp ../../kernel_patches/wild/susfs_fix_patches/v1.5.10/10_enable_susfs_for_ksu.patch ./
-          patch -p1 --forward < 10_enable_susfs_for_ksu.patch || true
+          #cp ../../kernel_patches/wild/susfs_fix_patches/v${SUSFS_VERSION}/10_enable_susfs_for_ksu.patch ./
+          patch -p1 < 10_enable_susfs_for_ksu.patch || true
 
           # Apply compatibility fixes
-          cp ../../kernel_patches/wild/susfs_fix_patches/v1.5.10/fix_core_hook.c.patch ./
-          patch -p1 --forward --fuzz=3 < fix_core_hook.c.patch
+          cp ../../kernel_patches/wild/susfs_fix_patches/v${SUSFS_VERSION}/fix_core_hook.c.patch ./
+          patch -p1 < fix_core_hook.c.patch
 
           # Skipping fix_rules.c.patch as it's not needed for Nothing Phone Android 12 5.10
 
-          cp ../../kernel_patches/wild/susfs_fix_patches/v1.5.10/fix_sucompat.c.patch ./
-          patch -p1 --forward < fix_sucompat.c.patch
+          cp ../../kernel_patches/wild/susfs_fix_patches/v${SUSFS_VERSION}/fix_sucompat.c.patch ./
+          patch -p1 < fix_sucompat.c.patch
 
-          cp ../../kernel_patches/wild/susfs_fix_patches/v1.5.10/fix_kernel_compat.c.patch ./
-          patch -p1 --forward < fix_kernel_compat.c.patch
+          cp ../../kernel_patches/wild/susfs_fix_patches/v${SUSFS_VERSION}/fix_kernel_compat.c.patch ./
+          patch -p1 < fix_kernel_compat.c.patch
 
       - name: Getting KernelSU Version
         run: |
@@ -177,7 +189,41 @@ jobs:
         run: |
           cd "$CONFIG/common"
           cp ../../kernel_patches/wild/hooks/scope_min_manual_hooks_v1.4.patch ./
-          patch -p1 --forward -F 3 < scope_min_manual_hooks_v1.4.patch
+          patch -p1 -F 3 < scope_min_manual_hooks_v1.4.patch
+
+      - name: Scan and collect patch rejects
+        if: ${{ always() }}
+        run: |
+          set -e
+          CONFIG_DIR="$CONFIG"
+          REJECTS_DIR="$GITHUB_WORKSPACE/patch-rejects"
+          mkdir -p "$REJECTS_DIR"
+
+          # Find all .rej files under the configuration directory
+          mapfile -t REJS < <(find "$CONFIG_DIR" -type f -name '*.rej')
+          REJ_COUNT=${#REJS[@]}
+          echo "Found $REJ_COUNT .rej files under $CONFIG_DIR"
+          echo "REJ_COUNT=$REJ_COUNT" >> $GITHUB_ENV
+
+          if [ "$REJ_COUNT" -gt 0 ]; then
+            for REJ in "${REJS[@]}"; do
+              # Relative path from $CONFIG
+              REL="${REJ#"$CONFIG_DIR"/}"
+              DEST="$REJECTS_DIR/$REL"
+              mkdir -p "$(dirname "$DEST")"
+              cp "$REJ" "$DEST"
+
+              # Copy the associated original file alongside the .rej
+              ORIG="${REJ%.rej}"
+              if [ -f "$ORIG" ]; then
+                ORIG_DEST="$REJECTS_DIR/${REL%.rej}"
+                mkdir -p "$(dirname "$ORIG_DEST")"
+                cp "$ORIG" "$ORIG_DEST"
+              fi
+
+              echo "$REL" >> "$REJECTS_DIR/index.txt"
+            done
+          fi
 
       - name: Apply Module Symbol Version Fix Patch
         run: |
@@ -258,6 +304,27 @@ jobs:
           ld.lld --version
           aarch64-linux-gnu-gcc --version
 
+      - name: Set file name
+        run: |
+          # Set artifact name base for consistent naming
+
+          # Prepare sublevel for naming
+          SUBLEVEL_FOR_NAME="${{ inputs.sub_level }}"
+          if [ -n "$ACTUAL_SUBLEVEL" ]; then
+            SUBLEVEL_FOR_NAME="$ACTUAL_SUBLEVEL"
+          fi
+
+          # Set artifact name base for consistent naming
+          ARTIFACT_BASE="WKSU-${{ env.KSUVER }}-SUSFS_${{ matrix.apply_susfs_v1_5_9 }}-nothing-android12-5.10.${SUBLEVEL_FOR_NAME}-${{ inputs.os_patch_level }}-Normal"
+          echo "ARTIFACT_BASE=$ARTIFACT_BASE" >> $GITHUB_ENV
+          echo "FILE_NAME=$ARTIFACT_BASE" >> $GITHUB_ENV
+
+          # Debug output to show the actual artifact name being used
+          echo "🔍 DEBUG: Generated artifact name: $ARTIFACT_BASE"
+          echo "🔍 DEBUG: Matrix values - SUSFS: ${{ matrix.apply_susfs_v1_5_9 }}, Module Check: ${{ matrix.apply_module_check_bypass }}"
+          echo "🔍 DEBUG: Input values - Android: ${{ inputs.android_version }}, Kernel: ${{ inputs.kernel_version }}, Sub-level: ${{ inputs.sub_level }}, OS Patch: ${{ inputs.os_patch_level }}"
+          echo "🔍 DEBUG: Runtime values - Run ID: ${{ github.run_id }}, Job: ${{ github.job }}, KSU Version: ${{ env.KSUVER }}"
+
       - name: Build Kernel
         run: |
           KERNEL_PATH="$GITHUB_WORKSPACE/$CONFIG"
@@ -271,7 +338,7 @@ jobs:
           make -j$(nproc --all) O=out $MAKE_ARGS KCFLAGS+="-Wno-error -O2" vendor/meteoric_defconfig || exit 1
           make -j$(nproc --all) O=out $MAKE_ARGS KCFLAGS+="-Wno-error -O2" Image Image.gz Image.lz4 || exit 1
 
-      - name: Create AK3 ZIP
+      - name: Prepare AnyKernel3
         run: |
           # Copy Image from make build output
           if [ -f "$CONFIG/common/out/arch/arm64/boot/Image" ]; then
@@ -280,18 +347,6 @@ jobs:
             echo "Error: Image file not found in expected location"
             exit 1
           fi
-
-          cd AnyKernel3
-
-          # Use actual sublevel for LTS builds if available
-          SUBLEVEL_FOR_NAME="${{ inputs.sub_level }}"
-          if [ -n "${{ env.ACTUAL_SUBLEVEL }}" ] && [ "${{ env.ACTUAL_SUBLEVEL }}" != "X" ]; then
-            SUBLEVEL_FOR_NAME="${{ env.ACTUAL_SUBLEVEL }}"
-          fi
-
-          # Fixed naming for Nothing Phone kernel with LTS support
-          ZIP_NAME="WKSU-$KSUVER-nothing-android12-5.10.$SUBLEVEL_FOR_NAME-${{ inputs.os_patch_level }}-AnyKernel3.zip"
-          zip -r "../$ZIP_NAME" ./*
 
       - name: Create Bootimgs Folder and Copy Images
         run: |
@@ -327,17 +382,8 @@ jobs:
           echo "Changing to configuration directory: $CONFIG..."
           cd bootimgs
 
-          # Prepare sublevel for naming
-          SUBLEVEL_FOR_NAME="${{ inputs.sub_level }}"
-          if [ -n "${{ env.ACTUAL_SUBLEVEL }}" ] && [ "${{ env.ACTUAL_SUBLEVEL }}" != "X" ]; then
-            SUBLEVEL_FOR_NAME="${{ env.ACTUAL_SUBLEVEL }}"
-          fi
-
-          # Fixed naming for Nothing Phone kernel
-          KERNEL_NAME="nothing-android12-5.10"
-
-          GKI_URL=https://dl.google.com/android/gki/gki-certified-boot-android12-5.10-"${{ inputs.os_patch_level || '2024-12' }}"_"${{ inputs.revision || 'r1' }}".zip
-          FALLBACK_URL=https://dl.google.com/android/gki/gki-certified-boot-android12-5.10-2025-06_r1.zip
+          GKI_URL=https://dl.google.com/android/gki/gki-certified-boot-android12-5.10-"${{ inputs.os_patch_level || '2024-12' }}"_r1.zip
+          FALLBACK_URL=https://dl.google.com/android/gki/gki-certified-boot-android12-5.10-2023-01_r1.zip
 
           # Check if the GKI URL is available
           echo "Checking if GKI kernel URL is reachable: $GKI_URL"
@@ -365,24 +411,31 @@ jobs:
           echo "Building boot.img"
           $MKBOOTIMG --header_version 4 --kernel Image --output boot.img --ramdisk out/ramdisk --os_version 12.0.0 --os_patch_level "${{ inputs.os_patch_level || '2024-12' }}"
           $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
-          cp ./boot.img ../WKSU-$KSUVER-nothing-android12-5.10.$SUBLEVEL_FOR_NAME-${{ inputs.os_patch_level }}-boot.img
+          cp ./boot.img ../${{ env.FILE_NAME }}-boot.img
 
           echo "Building boot-gz.img"
           $MKBOOTIMG --header_version 4 --kernel Image.gz --output boot-gz.img --ramdisk out/ramdisk --os_version 12.0.0 --os_patch_level "${{ inputs.os_patch_level || '2024-12' }}"
           $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-gz.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
-          cp ./boot-gz.img ../WKSU-$KSUVER-nothing-android12-5.10.$SUBLEVEL_FOR_NAME-${{ inputs.os_patch_level }}-boot-gz.img
+          cp ./boot-gz.img ../${{ env.FILE_NAME }}-boot-gz.img
 
           echo "Building boot-lz4.img"
           $MKBOOTIMG --header_version 4 --kernel Image.lz4 --output boot-lz4.img --ramdisk out/ramdisk --os_version 12.0.0 --os_patch_level "${{ inputs.os_patch_level || '2024-12' }}"
           $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-lz4.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
-          cp ./boot-lz4.img ../WKSU-$KSUVER-nothing-android12-5.10.$SUBLEVEL_FOR_NAME-${{ inputs.os_patch_level }}-boot-lz4.img
+          cp ./boot-lz4.img ../${{ env.FILE_NAME }}-boot-lz4.img
 
       # Android 13/14/15 boot image build not needed for Nothing Phone Android 12 kernel
+
+      - name: Upload Patch Rejects (if any)
+        if: ${{ always() && env.REJ_COUNT != '0' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE_NAME }}-Patch-Rejects
+          path: patch-rejects
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: WKSU-${{ env.KSUVER }}-nothing-android12-5.10.${{ env.ACTUAL_SUBLEVEL || inputs.sub_level }}-${{ inputs.os_patch_level }}-make
+          name: ${{ env.FILE_NAME }}-make
           path: |
-            *.zip
-            *.img
+            AnyKernel3/
+          compression-level: 9
