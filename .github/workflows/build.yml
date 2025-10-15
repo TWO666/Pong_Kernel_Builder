@@ -435,7 +435,7 @@ jobs:
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.FILE_NAME }}-make
+          name: ${{ env.FILE_NAME }}-AnyKernel3
           path: |
             AnyKernel3/
           compression-level: 9
