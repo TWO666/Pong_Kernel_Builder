@@ -16,9 +16,21 @@ on:
   #   paths:
   #     - '.github/workflows/**'
   workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Choose Release Type'
+        required: true
+        type: choice
+        options:
+          - Actions
+          - Pre-Release
+          - Release
+          - Release (No Artifacts)
+        default: Actions
 
 jobs:
   build-nothing-phone:
+    if: inputs.release_type != 'Release (No Artifacts)'
     uses: ./.github/workflows/build.yml
     secrets: inherit
     with:
@@ -28,6 +40,7 @@ jobs:
 
   release:
     runs-on: ubuntu-latest
+    if: inputs.release_type == 'Release (No Artifacts)' || inputs.release_type != 'Actions'
     needs:
       - build-nothing-phone
 
@@ -36,56 +49,14 @@ jobs:
       RELEASE_NAME: 'Nothing Phone Kernels With WKSU & SUSFS v1.5.12'
       RELEASE_BODY: ''
     steps:
-      - name: Maximize Build Space
-        uses: easimon/maximize-build-space@c28619d8999a147d5e09c1199f84ff6af6ad5794
-        with:
-          root-reserve-mb: 8192
-          temp-reserve-mb: 2048
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Get commit hashes and generate commit URLs
-        run: |
-          GITLAB_OWNER="simonpunk"
-          GITLAB_REPO="susfs4ksu"
-
-          # Get SUSFS commit hash for android12-5.10
-          BRANCH_NAME="gki-android12-5.10"
-          COMMIT_HASH=$(git ls-remote https://gitlab.com/$GITLAB_OWNER/$GITLAB_REPO.git refs/heads/$BRANCH_NAME | awk '{ print $1 }')
-
-          if [[ -n "$COMMIT_HASH" ]]; then
-            COMMIT_URL="https://gitlab.com/$GITLAB_OWNER/$GITLAB_REPO/-/commit/$COMMIT_HASH"
-            echo "$BRANCH_NAME Commit: $COMMIT_HASH"
-            echo "$BRANCH_NAME Commit URL: $COMMIT_URL"
-
-            echo "COMMIT_HASH_SUSFS=$COMMIT_HASH" >> "$GITHUB_ENV"
-            echo "COMMIT_URL_SUSFS=$COMMIT_URL" >> "$GITHUB_ENV"
-          fi
-
-      - name: Get KernelSU variant refs and links
-        run: |
-          # Get WKSU latest commit from wild branch
-          WKSU_REF=$(git ls-remote "https://github.com/WildKernels/Wild_KSU.git" refs/heads/wild | awk '{print $1}')
-          WKSU_URL="https://github.com/WildKernels/Wild_KSU/commit/$WKSU_REF"
-          echo "WKSU_REF=$WKSU_REF" >> $GITHUB_ENV
-          echo "WKSU_URL=$WKSU_URL" >> $GITHUB_ENV
-
-          # Get Nothing Phone kernel commit
-          NOTHING_REF=$(git ls-remote "https://github.com/MiguVT/kernel_nothing_sm8475_github_actions.git" refs/heads/clean | awk '{print $1}')
-          NOTHING_URL="https://github.com/MiguVT/kernel_nothing_sm8475_github_actions/commit/$NOTHING_REF"
-          echo "NOTHING_REF=$NOTHING_REF" >> $GITHUB_ENV
-          echo "NOTHING_URL=$NOTHING_URL" >> $GITHUB_ENV
-
-      - name: Generate and Create New Tag
+      - name: Generate New Tag
         run: |
           LATEST_TAG=$(gh api repos/${{ github.repository }}/tags --jq '.[0].name')
           if [ -z "$LATEST_TAG" ]; then
-            LATEST_TAG="v1.5.1-r0"
+            LATEST_TAG="v1.5.12-r0"
           fi
 
           NEW_TAG=$(echo "$LATEST_TAG" | awk -F'-r' '{suffix=$2; if (!suffix) suffix=0; suffix++; printf "%s-r%d", $1, suffix}')
@@ -97,6 +68,7 @@ jobs:
           git push origin $NEW_TAG
 
       - name: Download Artifacts
+        if: inputs.release_type != 'Release (No Artifacts)'
         uses: actions/download-artifact@v4
         with:
           path: ./downloaded-artifacts
@@ -121,11 +93,18 @@ jobs:
           -> SUSFS ඞ
           -> Scope-Minimized Manual hooks v1.4
           -> Magic Mount Support
-          -> Simple Maphide for LineageOS Detections
-          -> Futile Maphide for jit-zygote-cache Detections
+          -> Ptrace Patch Support
           -> IPSet Support for Advanced Network Filtering
           -> Wireguard Support
           -> BBR v1 Support
+          -> Added BBG support to prevent unauthorised writes to certain partitions: https://github.com/vc-teahouse/Baseband-guard
+
+          🔹 BBG (Baseband-guard)
+          - A lightweight LSM (Linux Security Module) for Android kernel
+          - Blocks unauthorized writes to critical partitions/device nodes
+          - Prevents malicious tampering with baseband and boot chain
+          - Kernel-level protection via LSM hooks
+          - Reduces risk of soft-brick/hard-brick issues
 
           **Installation Instructions:**
           -> Use **OrangeFox Recovery** to flash the **AnyKernel3.zip** file
@@ -134,58 +113,44 @@ jobs:
 
           Notes:
           -> SUS SU Mode 2 will show as disabled or not compatible due to non-kprobe hooks and is not needed anymore!
-          -> Official Kernel Flasher is broken with latest susfs, try https://github.com/fatalcoder524/KernelFlasher/ or better use OrangeFox
-          -> **Device specific**: These kernels are built specifically for Nothing Phone 2
+          -> Official Kernel Flasher is broken with latest susfs, try https://github.com/fatalcoder524/KernelFlasher/ or better use OrangeFox Recovery and flash the AnyKernel3 ZIP
+          -> **Note:** For detailed commit information and component versions, please check the [build summary](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) in the GitHub Actions workflow that generated this release.
+
 
           Module:
           -> https://github.com/sidex15/ksu_module_susfs
 
           Managers:
-          -> WKSU: https://t.me/Wild_Kernels/26618
+          -> WKSU: https://github.com/WildKernels/Wild_KSU
           -> Next: https://github.com/KernelSU-Next/KernelSU-Next
-
-          Commit Hashes (at the time of release):
-          -> WKSU: [${{ env.WKSU_REF }}](${{ env.WKSU_URL }})
-          -> Nothing Phone Kernel: [${{ env.NOTHING_REF }}](${{ env.NOTHING_URL }})
-          -> SUSFS4KSU (gki-android12-5.10): [${{ env.COMMIT_HASH_SUSFS }}](${{ env.COMMIT_URL_SUSFS }})
           EOF
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.NEW_TAG }}
-          prerelease: false
+          prerelease: ${{ inputs.release_type == 'Pre-Release' }}
           files: ''
           name: ${{ env.RELEASE_NAME }}
           body_path: release_body.md
 
       - name: Upload Release Assets
+        if: inputs.release_type != 'Release (No Artifacts)'
         run: |
           for dir in ./downloaded-artifacts/*/; do
-            if [ -d "$dir" ]; then
-              # Upload only AnyKernel3 ZIP files (created in build.yml)
-              for zipfile in "$dir"/*-AnyKernel3.zip; do
-                if [ -f "$zipfile" ]; then
-                  echo "Uploading $(basename "$zipfile")..."
-                  gh release upload ${{ env.NEW_TAG }} "$zipfile"
-                fi
-              done
+            # Check if this is an AnyKernel3 artifact directory
+            if [[ "$(basename "$dir")" == *"-AnyKernel3" ]]; then
+              artifact_name=$(basename "$dir")
+              echo "Creating ZIP for $artifact_name..."
+              # The entire directory IS the AnyKernel3 content, so zip it directly
+              zip -r -9 "${artifact_name}.zip" "$dir"
+              echo "Uploading ${artifact_name}.zip..."
+              gh release upload ${{ env.NEW_TAG }} "${artifact_name}.zip"
             fi
           done
 
       - name: Display Files Uploaded
+        if: inputs.release_type != 'Release (No Artifacts)'
         run: |
           echo "GitHub release created with the following files:"
-          find ./downloaded-artifacts -type f | sort
-
-      # - name: Send Telegram Notification
-      #   run: |
-      #     curl -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-      #       -F chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-      #       -F message_thread_id="${{ secrets.TELEGRAM_TOPIC_ID_GKI }}" \
-      #       -F text="
-      #       🌽 *New Kernel Release Uploaded*
-      #       📦 *Repository:* [${{ github.repository }}](https://github.com/${{ github.repository }})
-      #       ✏️ *Commit:* [${{ github.sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
-      #       [🔗 View GitHub Release](https://github.com/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }})" \
-      #       -F parse_mode="Markdown"
+          ls ./downloaded-artifacts/**/*

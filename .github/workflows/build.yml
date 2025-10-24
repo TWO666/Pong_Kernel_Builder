@@ -23,23 +23,23 @@ jobs:
   build-nothing-kernel:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    strategy:
-      matrix:
-        apply_susfs_v1_5_9: ['v1.5.9', 'v1.5.12']
 
     steps:
-      # - name: Maximize Build Space
-      #   uses: AdityaGarg8/remove-unwanted-software@v5
-      #   with:
-      #     remove-dotnet: 'true' # Frees ~2 GB
-      #     remove-android: 'true' # Frees ~9 GB
-      #     remove-haskell: 'true' # Frees ~5.2 GB
-      #     remove-codeql: 'true' # Frees ~5.4 GB
-      #     remove-docker-images: 'true' # Frees ~3.2 GB
-      #     remove-large-packages: 'true' # Frees ~3.1 GB
-      #     remove-swapfile: 'true' # Frees ~4 GB
-      #     remove-cached-tools: 'false' # Avoid unless confirmed safe
-      #     verbose: 'true' # Enable detailed logging
+      - name: Check Initial Disk Space
+        run: |
+          echo "===== Initial Total Disk Space in GB ====="
+          df -BG
+
+      - name: Download Apache Arrow's util_free_space.sh
+        run: |
+          curl -L -o util_free_space.sh https://raw.githubusercontent.com/apache/arrow/main/ci/scripts/util_free_space.sh
+          chmod +x util_free_space.sh
+          ./util_free_space.sh
+
+      - name: Check Disk Space After Cleanup
+        run: |
+          echo "===== Total Disk Space After Cleanup in GB ====="
+          df -BG
 
       - name: Set CONFIG Environment Variable
         run: |
@@ -101,6 +101,18 @@ jobs:
 
           echo "Kernel source cloned successfully from Nothing Phone repository"
 
+      - name: Check Directory Space Usage
+        run: |
+          echo "===== Total Disk Space After Kernel Download in GB ====="
+          df -BG
+
+          echo "===== Directory Space Usage in GB ====="
+          du -BG -d 1 | sort -nr
+
+          echo "===== $CONFIG Directory Space Usage in GB ====="
+          cd "$CONFIG"
+          du -BG -d 2 | sort -nr
+
       - name: Extract Actual Sublevel for LTS Builds
         if: inputs.sub_level == 'X'
         run: |
@@ -138,6 +150,11 @@ jobs:
         run: |
           cd "$CONFIG"
 
+          # Apply compatibility fixes
+          SUSFS_VERSION="1.5.12"
+          cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
+          cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+
           # Apply core SUSFS patches
           cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch ./common/
           cd common
@@ -145,14 +162,8 @@ jobs:
           cd ..
           cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
           cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-
-          if [ "${{ matrix.apply_susfs_v1_5_9 }}" = "v1.5.9" ]; then
-            SUSFS_VERSION="1.5.9"
-          else
-            SUSFS_VERSION="1.5.12"
-          fi
           # Apply KSU integration patches
-          cd ./Wild_KSU
+          cd ../Wild_KSU
           cp ../../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch .
           #cp ../../kernel_patches/wild/susfs_fix_patches/v${SUSFS_VERSION}/10_enable_susfs_for_ksu.patch ./
           patch -p1 < 10_enable_susfs_for_ksu.patch || true
@@ -183,7 +194,7 @@ jobs:
           echo "Adding BBG..."
           wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
           echo "CONFIG_BBG=y" >> common/arch/arm64/configs/gki_defconfig
-          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/landlock/landlock,baseband_guard/ } }' common/security/Kconfig
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/lockdown/lockdown,baseband_guard/ } }' common/security/Kconfig
 
       - name: Apply Hooks Patches
         run: |
@@ -232,52 +243,128 @@ jobs:
           #sed -i 's/pr_warn("%s: disagrees about version of symbol %s\\n"/pr_warn("%s: disagrees about version of symbol %s, but ignore...\\n"/' module.c
           sed -i '/bad_version:/{:a;n;/return 0;/{s/return 0;/return 1;/;b};ba}' module.c
 
-      # WiFi and Bluetooth Samsung fix only needed for 6.6 kernels, not for 5.10
-
-      - name: Apply Kernel Configuration
+      # WiFi and Bluetooth Samsung not needed (Nothing Phone has no Samsung modules and if they had, wouldn't be needed in android12-5.10)
+      - name: Set Kernel Configuration Variables
         run: |
           cd "$CONFIG"
 
-          defconfig="./common/arch/arm64/configs/vendor/meteoric_defconfig"
-
-          echo "Using Nothing Phone meteoric_defconfig..."
-
-          # KernelSU Core Configuration
-          echo "CONFIG_KSU=y" >> "$defconfig"
-          echo "CONFIG_KSU_KPROBES_HOOK=n" >> "$defconfig"
-
-          # SUSFS Configuration
-          echo "CONFIG_KSU_SUSFS=y" >> "$defconfig"
-          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> "$defconfig"
-          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$defconfig"
-          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$defconfig"
-
-          # SUSFS Auto Mount Features
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> "$defconfig"
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> "$defconfig"
-          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$defconfig"
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> "$defconfig"
-
-          # SUSFS Advanced Features
-          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$defconfig"
-          echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n" >> "$defconfig"
-          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$defconfig"
-          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$defconfig"
-          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$defconfig"
-
-          # SUSFS Debugging and Security
-          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$defconfig"
-          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$defconfig"
-          echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> "$defconfig"
-
-          # Build Optimization Configuration
-          echo "CONFIG_LTO_CLANG_THIN=y" >> "$defconfig"
-          echo "CONFIG_LTO_CLANG=y" >> "$defconfig"
-          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "$defconfig"
-          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=n" >> "$defconfig"
+          echo "Initializing kernel configuration..."
+          echo "DEFCONFIG=./common/arch/arm64/configs/vendor/meteoric_defconfig" >> $GITHUB_ENV
 
           # Remove check_defconfig
           sed -i 's/check_defconfig//' ./common/build.config.gki
+
+      - name: Configure KernelSU Core
+        run: |
+          cd "$CONFIG"
+          # KernelSU Configuration
+          echo "# KernelSU Configuration" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_KPROBES_HOOK=n" >> "${{ env.DEFCONFIG }}"
+      - name: Configure Mountify Support
+        run: |
+          cd "$CONFIG"
+          # Mountify Support
+          echo "# Mountify Support" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_TMPFS_XATTR=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "${{ env.DEFCONFIG }}"
+      - name: Configure Networking
+        run: |
+          cd "$CONFIG"
+          # Networking Configuration
+          echo "# Networking Configuration" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_NF_TARGET_TTL=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP6_NF_TARGET_HL=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP6_NF_MATCH_HL=y" >> "${{ env.DEFCONFIG }}"
+      - name: Configure TCP Congestion Control
+        run: |
+          cd "$CONFIG"
+          # BBR TCP Congestion Control
+          echo "# BBR TCP Congestion Control" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_TCP_CONG_ADVANCED=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_TCP_CONG_BBR=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_NET_SCH_FQ=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_TCP_CONG_BIC=n" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_TCP_CONG_WESTWOOD=n" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_TCP_CONG_HTCP=n" >> "${{ env.DEFCONFIG }}"
+      - name: Configure IPSet Support
+        run: |
+          cd "$CONFIG"
+          # IPSet support
+          echo "# IPSet Support" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_MAX=65534" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_BITMAP_IP=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_BITMAP_PORT=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_HASH_IP=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_HASH_IPMARK=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_HASH_IPPORT=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_HASH_IPMAC=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_HASH_MAC=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_HASH_NET=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_HASH_NETNET=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_HASH_NETPORT=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_IP_SET_LIST_SET=y" >> "${{ env.DEFCONFIG }}"
+      - name: Configure SUSFS
+        run: |
+          cd "$CONFIG"
+          # SUSFS Configuration
+          echo "# SUSFS Configuration" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS=y" >> "${{ env.DEFCONFIG }}"
+          echo "#CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> "${{ env.DEFCONFIG }}"
+      - name: Configure Sound
+        if: false
+        run: |
+          cd "$CONFIG"
+          # Sound Configuration
+          echo "# Sound Configuration" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_SND=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_SND_DRIVERS=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_SND_PCM=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_SND_TIMER=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_SND_DYNAMIC_MINORS=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_SND_PROC_FS=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_SND_ALOOP=m" >> "${{ env.DEFCONFIG }}"
+
+          # Add snd-aloop.ko to modules list
+          if [ -f "build/build.sh" ]; then
+            echo "sound/drivers/snd-aloop.ko" >> common/android/gki_aarch64_modules
+          else
+            sed -i '/_COMMON_GKI_MODULES_LIST = \\[/,/\\]/ s/\\]/    "sound\/drivers\/snd-aloop.ko",\\n&/' common/modules.bzl
+          fi
+
+          # Add symbols to abi_gki_aarch64
+          SYMBOL_LIST=common/android/abi_gki_aarch64
+          cat Wild_KSU/kernel/export_symbol.txt | awk '{sub("[ \t]+","");print "  "$0}' >> $SYMBOL_LIST
+      - name: Configure Build Optimization
+        run: |
+          cd "$CONFIG"
+          # Build Optimization Configuration
+          echo "# Build Optimization Configuration" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_LTO_CLANG_THIN=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_LTO_CLANG=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=n" >> "${{ env.DEFCONFIG }}"
+          echo "CONFIG_OPTIMIZE_INLINING=y" >> "${{ env.DEFCONFIG }}"
 
       - name: Change Kernel Name
         run: |
@@ -309,21 +396,77 @@ jobs:
           # Set artifact name base for consistent naming
 
           # Prepare sublevel for naming
-          SUBLEVEL_FOR_NAME="${{ inputs.sub_level }}"
-          if [ -n "$ACTUAL_SUBLEVEL" ]; then
-            SUBLEVEL_FOR_NAME="$ACTUAL_SUBLEVEL"
+          SUBLEVEL_FOR_NAME="${{ env.ACTUAL_SUBLEVEL }}"
+          if [ -z "$SUBLEVEL_FOR_NAME" ] || [ "$SUBLEVEL_FOR_NAME" = "X" ]; then
+            SUBLEVEL_FOR_NAME="${{ inputs.sub_level }}"
           fi
 
           # Set artifact name base for consistent naming
-          ARTIFACT_BASE="WKSU-${{ env.KSUVER }}-SUSFS_${{ matrix.apply_susfs_v1_5_9 }}-nothing-android12-5.10.${SUBLEVEL_FOR_NAME}-${{ inputs.os_patch_level }}-Normal"
+          ARTIFACT_BASE="WKSU-${{ env.KSUVER }}-nothing-android12-5.10.${SUBLEVEL_FOR_NAME}-${{ inputs.os_patch_level }}-Normal"
           echo "ARTIFACT_BASE=$ARTIFACT_BASE" >> $GITHUB_ENV
           echo "FILE_NAME=$ARTIFACT_BASE" >> $GITHUB_ENV
 
           # Debug output to show the actual artifact name being used
           echo "🔍 DEBUG: Generated artifact name: $ARTIFACT_BASE"
-          echo "🔍 DEBUG: Matrix values - SUSFS: ${{ matrix.apply_susfs_v1_5_9 }}, Module Check: ${{ matrix.apply_module_check_bypass }}"
-          echo "🔍 DEBUG: Input values - Android: ${{ inputs.android_version }}, Kernel: ${{ inputs.kernel_version }}, Sub-level: ${{ inputs.sub_level }}, OS Patch: ${{ inputs.os_patch_level }}"
-          echo "🔍 DEBUG: Runtime values - Run ID: ${{ github.run_id }}, Job: ${{ github.job }}, KSU Version: ${{ env.KSUVER }}"
+          echo "🔍 DEBUG: Runtime values - Run ID: ${{ github.run_id }}, Job: ${{ github.job }}, KSU Version: ${{ env.KSUVER }}, Sublevel: $SUBLEVEL_FOR_NAME"
+
+      - name: Search for Kernel Modules
+        run: |
+          echo "Searching for kernel modules (.ko files)..."
+
+          # Function to scan for modules (search only)
+          scan_modules() {
+            local search_dir="$1"
+            local module_count=0
+
+            if [ -d "$search_dir" ]; then
+              echo "Scanning directory: $search_dir"
+
+              # Find all .ko files and report their locations
+              while IFS= read -r -d '' module_file; do
+                if [ -f "$module_file" ]; then
+                  module_name=$(basename "$module_file")
+                  echo "Found module: $module_name in $(dirname "$module_file")"
+                  ((module_count++))
+                fi
+              done < <(find "$search_dir" -name "*.ko" -type f -print0 2>/dev/null)
+            fi
+
+            return $module_count
+          }
+
+          # Scan common build output directories
+          total_modules=0
+
+          # Scan bazel-bin directory
+          if scan_modules "./$CONFIG/bazel-bin"; then
+            total_modules=$((total_modules + $?))
+          fi
+
+          # Scan out directory
+          if scan_modules "./$CONFIG/out"; then
+            total_modules=$((total_modules + $?))
+          fi
+
+          # Scan dist directory specifically - use ACTUAL_SUBLEVEL with fallback
+          SUBLEVEL="${{ env.ACTUAL_SUBLEVEL }}"
+          if [ -z "$SUBLEVEL" ] || [ "$SUBLEVEL" = "X" ]; then
+            SUBLEVEL="${{ inputs.sub_level }}"
+          fi
+          if scan_modules "./$CONFIG/out/12-5.10.$SUBLEVEL/dist"; then
+            total_modules=$((total_modules + $?))
+          fi
+
+          # Look for snd-aloop.ko specifically
+          echo "Searching specifically for snd-aloop.ko..."
+          snd_aloop_found=$(find ./$CONFIG -name "snd-aloop.ko" -type f 2>/dev/null | head -1)
+          if [ -n "$snd_aloop_found" ]; then
+            echo "Found snd-aloop.ko at: $snd_aloop_found"
+          else
+            echo "snd-aloop.ko not found"
+          fi
+
+          echo "Total kernel modules found: $total_modules"
 
       - name: Build Kernel
         run: |
@@ -423,19 +566,129 @@ jobs:
           $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-lz4.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
           cp ./boot-lz4.img ../${{ env.FILE_NAME }}-boot-lz4.img
 
-      # Android 13/14/15 boot image build not needed for Nothing Phone Android 12 kernel
-
-      - name: Upload Patch Rejects (if any)
-        if: ${{ always() && env.REJ_COUNT != '0' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.FILE_NAME }}-Patch-Rejects
-          path: patch-rejects
-
-      - name: Upload Build Artifacts
+      - name: Upload AnyKernel3 Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.FILE_NAME }}-AnyKernel3
           path: |
-            AnyKernel3/
+            ./AnyKernel3/**
           compression-level: 9
+
+      - name: Upload Boot Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE_NAME }}-boot.img
+          path: |
+            *-boot.img
+          compression-level: 9
+
+      - name: Upload Boot Image (GZ)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE_NAME }}-boot-gz.img
+          path: |
+            *-boot-gz.img
+          compression-level: 9
+
+      - name: Upload Boot Image (LZ4)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE_NAME }}-boot-lz4.img
+          path: |
+            *-boot-lz4.img
+          compression-level: 9
+
+      - name: Upload Raw Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE_NAME }}-Image
+          path: |
+            Image
+          compression-level: 9
+
+      - name: Upload Raw Image (GZ)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE_NAME }}-Image.gz
+          path: |
+            Image.gz
+          compression-level: 9
+
+      - name: Upload Raw Image (LZ4)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE_NAME }}-Image.lz4
+          path: |
+            Image.lz4
+          compression-level: 9
+
+      - name: Upload Build Diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE_NAME }}-Rejected-Patches
+          path: patch-rejects
+          compression-level: 9
+
+      - name: Initialize Kernel Summary
+        run: |
+          echo "# Kernel Build Summary" >> $GITHUB_STEP_SUMMARY
+
+          # Add build variant header
+          echo "## ${{ env.FILE_NAME }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Add Build Information
+        run: |
+          # Add build info - use ACTUAL_SUBLEVEL with fallback
+          SUBLEVEL="${{ env.ACTUAL_SUBLEVEL }}"
+          if [ -z "$SUBLEVEL" ] || [ "$SUBLEVEL" = "X" ]; then
+            SUBLEVEL="${{ inputs.sub_level }}"
+          fi
+          echo "## Build Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Android Version**: 12" >> $GITHUB_STEP_SUMMARY
+          echo "- **Kernel Version**: 5.10.$SUBLEVEL" >> $GITHUB_STEP_SUMMARY
+          echo "- **BBG**: Installed" >> $GITHUB_STEP_SUMMARY
+          echo "- **SUSFS**: v1.5.12" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+      - name: Add KSU Version
+        run: |
+          # Get Wild_KSU commit
+          cd "$CONFIG/Wild_KSU"
+          WKSU_COMMIT=$(git rev-parse HEAD)
+          WKSU_URL="https://github.com/WildKernels/Wild_KSU/commit/$WKSU_COMMIT"
+          echo "- **Wild_KSU**: [$WKSU_COMMIT]($WKSU_URL)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Add BBG Version
+        run: |
+          cd "$CONFIG/Baseband-guard"
+          BBG_COMMIT=$(git rev-parse HEAD)
+          BBG_URL="https://github.com/vc-teahouse/Baseband-guard/commit/$BBG_COMMIT"
+          echo "- **Baseband-guard**: [$BBG_COMMIT]($BBG_URL)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Add SUSFS Version
+        run: |
+          # Get SUSFS4KSU commit
+          cd "$GITHUB_WORKSPACE/susfs4ksu"
+          SUSFS_COMMIT=$(git rev-parse HEAD)
+          SUSFS_URL="https://gitlab.com/simonpunk/susfs4ksu/-/commit/$SUSFS_COMMIT"
+          echo "- **SUSFS4KSU (v1.5.12)**: [$SUSFS_COMMIT]($SUSFS_URL)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: Add Build Artifacts
+        run: |
+          # Add links to the artifacts for this build
+          echo "## Build Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- **AnyKernel3**: [${{ env.FILE_NAME }}-AnyKernel3](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Boot Images" >> $GITHUB_STEP_SUMMARY
+          echo "- **Boot Image (RAW)**: [${{ env.FILE_NAME }}-boot.img](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" >> $GITHUB_STEP_SUMMARY
+          echo "- **Boot Image (GZ)**: [${{ env.FILE_NAME }}-boot-gz.img](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" >> $GITHUB_STEP_SUMMARY
+          echo "- **Boot Image (LZ4)**: [${{ env.FILE_NAME }}-boot-lz4.img](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Kernel Images" >> $GITHUB_STEP_SUMMARY
+          echo "- **Kernel Image (RAW)**: [${{ env.FILE_NAME }}-Image](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" >> $GITHUB_STEP_SUMMARY
+          echo "- **Kernel Image (GZ)**: [${{ env.FILE_NAME }}-Image.gz](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" >> $GITHUB_STEP_SUMMARY
+          echo "- **Kernel Image (LZ4)**: [${{ env.FILE_NAME }}-Image.lz4](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Diagnostics" >> $GITHUB_STEP_SUMMARY
+          echo "- **Rejected Patches**: [${{ env.FILE_NAME }}-Rejected-Patches](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" >> $GITHUB_STEP_SUMMARY

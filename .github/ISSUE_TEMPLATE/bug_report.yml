@@ -93,7 +93,7 @@ body:
   - type: textarea
     attributes:
       label: Describe the bug
-      description: A clear and concise description of what the bug is
+      description: A clear and concise description of what the bug is. Please get log from /data/adb/ksu/logs/dmesg.log
     validations:
       required: true
 
