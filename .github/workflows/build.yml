@@ -146,40 +146,6 @@ jobs:
           cd "$CONFIG"
           curl -LSs "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
 
-      - name: Apply SUSFS Patches for KernelSU Variants
-        run: |
-          cd "$CONFIG"
-
-          # Apply compatibility fixes
-          SUSFS_VERSION="1.5.12"
-          cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
-          cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-
-          # Apply core SUSFS patches
-          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch ./common/
-          cd common
-          patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch || true
-          cd ..
-          cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
-          cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-          # Apply KSU integration patches
-          cd ../Wild_KSU
-          cp ../../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch .
-          #cp ../../kernel_patches/wild/susfs_fix_patches/v${SUSFS_VERSION}/10_enable_susfs_for_ksu.patch ./
-          patch -p1 < 10_enable_susfs_for_ksu.patch || true
-
-          # Apply compatibility fixes
-          cp ../../kernel_patches/wild/susfs_fix_patches/v${SUSFS_VERSION}/fix_core_hook.c.patch ./
-          patch -p1 < fix_core_hook.c.patch
-
-          # Skipping fix_rules.c.patch as it's not needed for Nothing Phone Android 12 5.10
-
-          cp ../../kernel_patches/wild/susfs_fix_patches/v${SUSFS_VERSION}/fix_sucompat.c.patch ./
-          patch -p1 < fix_sucompat.c.patch
-
-          cp ../../kernel_patches/wild/susfs_fix_patches/v${SUSFS_VERSION}/fix_kernel_compat.c.patch ./
-          patch -p1 < fix_kernel_compat.c.patch
-
       - name: Getting KernelSU Version
         run: |
           cd "$CONFIG/Wild_KSU/kernel"
@@ -188,13 +154,34 @@ jobs:
           KSU_VERSION=$(expr $COMMIT_COUNT "+" $BASE_VERSION)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
 
-      - name: Add BBG
+      - name: Apply SUSFS Patches for KernelSU Variants
         run: |
           cd "$CONFIG"
-          echo "Adding BBG..."
-          wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
-          echo "CONFIG_BBG=y" >> common/arch/arm64/configs/gki_defconfig
-          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/lockdown/lockdown,baseband_guard/ } }' common/security/Kconfig
+
+          # Apply compatibility fixes
+          SUSFS_VERSION="1.5.12"
+
+          cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
+          cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+
+          # Apply core SUSFS patches
+          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch ./common/
+          cd common
+          patch -p1 < 50_add_susfs_in_gki-android12-5.10.patch || true
+
+          # Apply KSU integration patches
+          cd ../Wild_KSU
+          cp ../../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch .
+          patch -p1 < 10_enable_susfs_for_ksu.patch || true
+
+          cp ../../kernel_patches/wild/susfs_fix_patches/v${SUSFS_VERSION}/fix_core_hook.c.patch ./
+          patch -p1 < fix_core_hook.c.patch
+
+          cp ../../kernel_patches/wild/susfs_fix_patches/v${SUSFS_VERSION}/fix_sucompat.c.patch ./
+          patch -p1 < fix_sucompat.c.patch
+
+          cp ../../kernel_patches/wild/susfs_fix_patches/v${SUSFS_VERSION}/fix_kernel_compat.c.patch ./
+          patch -p1 < fix_kernel_compat.c.patch
 
       - name: Apply Hooks Patches
         run: |
@@ -209,13 +196,11 @@ jobs:
           CONFIG_DIR="$CONFIG"
           REJECTS_DIR="$GITHUB_WORKSPACE/patch-rejects"
           mkdir -p "$REJECTS_DIR"
-
           # Find all .rej files under the configuration directory
           mapfile -t REJS < <(find "$CONFIG_DIR" -type f -name '*.rej')
           REJ_COUNT=${#REJS[@]}
           echo "Found $REJ_COUNT .rej files under $CONFIG_DIR"
           echo "REJ_COUNT=$REJ_COUNT" >> $GITHUB_ENV
-
           if [ "$REJ_COUNT" -gt 0 ]; then
             for REJ in "${REJS[@]}"; do
               # Relative path from $CONFIG
@@ -223,7 +208,6 @@ jobs:
               DEST="$REJECTS_DIR/$REL"
               mkdir -p "$(dirname "$DEST")"
               cp "$REJ" "$DEST"
-
               # Copy the associated original file alongside the .rej
               ORIG="${REJ%.rej}"
               if [ -f "$ORIG" ]; then
@@ -231,10 +215,17 @@ jobs:
                 mkdir -p "$(dirname "$ORIG_DEST")"
                 cp "$ORIG" "$ORIG_DEST"
               fi
-
               echo "$REL" >> "$REJECTS_DIR/index.txt"
             done
           fi
+
+      - name: Add BBG
+        run: |
+          cd "$CONFIG"
+          echo "Adding BBG..."
+          wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
+          echo "CONFIG_BBG=y" >> common/arch/arm64/configs/gki_defconfig
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/lockdown/lockdown,baseband_guard/ } }' common/security/Kconfig
 
       - name: Apply Module Symbol Version Fix Patch
         run: |
@@ -244,6 +235,7 @@ jobs:
           sed -i '/bad_version:/{:a;n;/return 0;/{s/return 0;/return 1;/;b};ba}' module.c
 
       # WiFi and Bluetooth Samsung not needed (Nothing Phone has no Samsung modules and if they had, wouldn't be needed in android12-5.10)
+
       - name: Set Kernel Configuration Variables
         run: |
           cd "$CONFIG"
@@ -261,6 +253,7 @@ jobs:
           echo "# KernelSU Configuration" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_KSU=y" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_KSU_KPROBES_HOOK=n" >> "${{ env.DEFCONFIG }}"
+
       - name: Configure Mountify Support
         run: |
           cd "$CONFIG"
@@ -268,6 +261,7 @@ jobs:
           echo "# Mountify Support" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_TMPFS_XATTR=y" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "${{ env.DEFCONFIG }}"
+
       - name: Configure Networking
         run: |
           cd "$CONFIG"
@@ -276,6 +270,7 @@ jobs:
           echo "CONFIG_IP_NF_TARGET_TTL=y" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_IP6_NF_TARGET_HL=y" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_IP6_NF_MATCH_HL=y" >> "${{ env.DEFCONFIG }}"
+
       - name: Configure TCP Congestion Control
         run: |
           cd "$CONFIG"
@@ -287,6 +282,7 @@ jobs:
           echo "CONFIG_TCP_CONG_BIC=n" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_TCP_CONG_WESTWOOD=n" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_TCP_CONG_HTCP=n" >> "${{ env.DEFCONFIG }}"
+
       - name: Configure IPSet Support
         run: |
           cd "$CONFIG"
@@ -310,6 +306,7 @@ jobs:
           echo "CONFIG_IP_SET_HASH_NETPORT=y" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_IP_SET_LIST_SET=y" >> "${{ env.DEFCONFIG }}"
+
       - name: Configure SUSFS
         run: |
           cd "$CONFIG"
@@ -331,6 +328,7 @@ jobs:
           echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "${{ env.DEFCONFIG }}"
           echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> "${{ env.DEFCONFIG }}"
+
       - name: Configure Sound
         if: false
         run: |
@@ -355,6 +353,7 @@ jobs:
           # Add symbols to abi_gki_aarch64
           SYMBOL_LIST=common/android/abi_gki_aarch64
           cat Wild_KSU/kernel/export_symbol.txt | awk '{sub("[ \t]+","");print "  "$0}' >> $SYMBOL_LIST
+
       - name: Configure Build Optimization
         run: |
           cd "$CONFIG"
