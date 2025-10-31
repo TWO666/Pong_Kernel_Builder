@@ -385,6 +385,9 @@ jobs:
             echo "未找到内核镜像文件，构建可能出错"
             exit 1
           fi
+          KERNEL_FINGERPRINT=$(strings Image | grep "Linux version")
+          echo "KERNEL_FINGERPRINT=$KERNEL_FINGERPRINT" >> $GITHUB_ENV
+          strings Image | grep "Linux version"
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
             KSU_TYPENAME="SukiSU"
           else
@@ -407,6 +410,7 @@ jobs:
           echo "- **设备**: Nothing Phone 2" >> $GITHUB_STEP_SUMMARY
           echo "- **Android版本**: 12" >> $GITHUB_STEP_SUMMARY
           echo "- **内核版本**: 5.10" >> $GITHUB_STEP_SUMMARY
+          echo "- **内核指纹**: ${{ env.KERNEL_FINGERPRINT }}" >> $GITHUB_STEP_SUMMARY
           echo "- **KernelSU类型**: ${{ github.event.inputs.ksu_type }}" >> $GITHUB_STEP_SUMMARY
           echo "- **KSU版本**: ${{ env.KSUVER }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Hook模式**: ${{ github.event.inputs.hook_method }}" >> $GITHUB_STEP_SUMMARY
@@ -453,6 +457,7 @@ jobs:
           body: |
             ### 📱 Nothing Phone 2 ${{ env.KSU_BRANCH }} 内核 | 构建信息
             - 机型：Nothing Phone 2 (android12-5.10)
+            - 指纹：${{ env.KERNEL_FINGERPRINT }}
             - 特性：${{ env.KSU_BRANCH }} + SUSFS + KPM
             - hook模式：${{ github.event.inputs.hook_method }}
             - KPM支持 (仅对sukisu生效)：${{ github.event.inputs.kpm_enable }}
