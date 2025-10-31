@@ -65,7 +65,7 @@ jobs:
           
           echo "正在克隆Nothing Phone内核源码..."
           git clone --depth=1 -b dev \
-            https://github.com/TWO666/helloboy017_kernel_pong.git common &
+            https://github.com/TWO666/hellboy017_kernel_pong.git common &
           
           echo "正在克隆llvm-Clang20工具链..." &&
           mkdir -p clang20 &&
@@ -137,18 +137,17 @@ jobs:
         run: |
           cd kernel_workspace
           # AnyKernel3
-          git clone https://github.com/WildKernels/AnyKernel3.git -b gki-2.0 --depth=1 &
+          git clone https://github.com/WildKernels/AnyKernel3.git -b gki-2.0 --depth=1
           
           # SUSFS
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }} --depth=1 &
+          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
+            git clone https://github.com/ShirkNeko/SukiSU_patch.git --depth=1
+            git clone https://github.com/ShirkNeko/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }} --depth=1
+          else
+            git clone https://github.com/WildKernels/kernel_patches.git --depth=1
+            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }} --depth=1
+          fi
           
-          # 内核补丁
-          git clone https://github.com/WildKernels/kernel_patches.git --depth=1 &
-          
-          # SukiSU 补丁
-          git clone https://github.com/ShirkNeko/SukiSU_patch.git --depth=1 &
-          
-          wait
           echo "依赖项目克隆完成"
 
       - name: 添加KernelSU
@@ -160,6 +159,11 @@ jobs:
             echo "正在配置SukiSU Ultra..."
             curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s susfs-main
             cd ./KernelSU
+            if grep -qF "static inline void time64_to_tm" "kernel/sulog.c"; then
+              wget https://raw.githubusercontent.com/TWO666/Pong_Kernel_Builder/refs/heads/main/patch/revert_rtc_time_compatibility.patch
+              git apply revert_rtc_time_compatibility.patch
+              rm -f revert_rtc_time_compatibility.patch
+            fi
             # 获取当前 Git 提交的短哈希 (8位)
             GIT_COMMIT_HASH=$(git rev-parse --short=8 HEAD)
             echo "当前提交哈希: $GIT_COMMIT_HASH"

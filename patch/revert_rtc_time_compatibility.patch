@@ -1,0 +1,37 @@
+diff --git a/kernel/sulog.c b/kernel/sulog.c
+index bdc2e9a1..ed67e3a2 100644
+--- a/kernel/sulog.c
++++ b/kernel/sulog.c
+@@ -14,25 +14,6 @@
+ #include <linux/spinlock.h>
+ #include <linux/crc32.h>
+ 
+-#if __has_include(<linux/rtc.h>)
+-#include <linux/rtc.h>
+-#endif
+-
+-#ifndef time64_to_tm
+-static inline void time64_to_tm(time64_t totalsecs, int offset, struct tm *result)
+-{
+-    struct rtc_time rtc_tm;
+-    rtc_time64_to_tm(totalsecs, &rtc_tm);
+-
+-    result->tm_sec  = rtc_tm.tm_sec;
+-    result->tm_min  = rtc_tm.tm_min;
+-    result->tm_hour = rtc_tm.tm_hour;
+-    result->tm_mday = rtc_tm.tm_mday;
+-    result->tm_mon  = rtc_tm.tm_mon;
+-    result->tm_year = rtc_tm.tm_year;
+-}
+-#endif
+-
+ #include "klog.h"
+ #include "kernel_compat.h"
+ #include "sulog.h"
+@@ -425,4 +406,4 @@ void ksu_sulog_exit(void)
+ 	
+ 	pr_info("sulog: cleaned up successfully\n");
+ }
+-#endif // __SULOG_GATE
++#endif // __SULOG_GATE
+\ No newline at end of file
