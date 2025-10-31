@@ -1,0 +1,570 @@
+name: 精简版构建 Nothing Phone 2 KernelSU + SUSFS
+
+env:
+  TZ: Asia/Shanghai
+  ANDROID_VERSION: 'android12'
+  KERNEL_VERSION: '5.10'
+  KERNEL_NAME: 'android12-9-00047-g4968e29b7f92-ab12786767'
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_type:
+        description: 'KernelSU分支(SukiSU Ultra/KernelSU Next,默认SukiSU Ultra)'
+        required: true
+        type: choice
+        default: 'sukisu'
+        options:
+          - 'sukisu'
+          - 'ksunext'
+      hook_method:
+        description: 'hook模式(大部分情况manual即可，若新版manual钩子出现问题可尝试syscall, 少数需切换sus su模式的场景才需要kprobes钩子)'
+        required: true
+        type: choice
+        default: 'manual'
+        options:
+          - 'manual'
+          - 'syscall'
+          - 'kprobes'
+      kpm_enable:
+        description: '是否开启kpm(仅对sukisu生效; 可能轻微增加耗电，不需要可保持默认关闭)'
+        required: true
+        type: choice
+        default: 'false'
+        options:
+          - 'true'
+          - 'false'
+      kernel_suffix:
+        description: '内核后缀(留空默认,开头别加连字符,勿加空格等影响指令运行的保留字符)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      ksuver: ${{ steps.ksu_version.outputs.ksuver }}
+
+    steps:
+      - name: 安装环境依赖+初始化源码仓库及llvm-Clang20工具链
+        run: |
+          rm -rf kernel_workspace
+          mkdir kernel_workspace
+          cd kernel_workspace
+          
+          sudo apt-mark hold firefox &&
+          sudo apt-mark hold libc-bin &&
+          sudo apt purge man-db &&
+          sudo rm -rf /var/lib/man-db/auto-update &&
+          sudo apt update &&
+          sudo apt-get install -y --no-install-recommends binutils python-is-python3 libssl-dev libelf-dev ccache &
+          #旧版完整指令：（由于经过验证大部分指令已内置于GitHub Action环境中，故进行精简）
+          #sudo apt-get install -y --no-install-recommends curl bison flex make binutils git perl gcc python3 python-is-python3 bc libssl-dev libelf-dev zip unzip ccache
+          
+          echo "正在克隆Nothing Phone内核源码..."
+          git clone --depth=1 -b dev \
+            https://github.com/TWO666/helloboy017_kernel_pong.git common &
+          
+          echo "正在克隆llvm-Clang20工具链..." &&
+          mkdir -p clang20 &&
+          aria2c -s16 -x16 -k1M https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang20-r547379/clang-r547379.zip -o clang.zip &&
+          unzip -q clang.zip -d clang20 &&
+          rm -rf clang.zip &
+          
+          echo "正在克隆构建工具..." &&
+          aria2c -s16 -x16 -k1M https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang20-r547379/build-tools.zip -o build-tools.zip &&
+          unzip -q build-tools.zip &&
+          rm -rf build-tools.zip &
+          
+          wait
+          echo "Nothing Phone内核源码及llvm-Clang20工具链初始化完成！"
+          echo "正在去除 ABI 保护 & 去除 dirty 后缀..."
+          rm common/android/abi_gki_protected_exports_* || true
+          for f in common/scripts/setlocalversion; do
+            sed -i 's/ -dirty//g' "$f"
+            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
+          done
+
+      - name: 配置ccache目录
+        run: |
+          echo "CCACHE_DIR=$HOME/.ccache_nothing_5.10" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=3G" >> $GITHUB_ENV
+          echo "当前磁盘空间："
+          df -h
+          echo "当前构建内核版本：Nothing Phone 5.10"
+
+      - name: 载入当前版本内核的 ccache缓存
+        uses: actions/cache@v4
+        id: ccache-restore
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-nothing-5.10-${{ runner.os }}-main
+          restore-keys: |
+            ccache-nothing-5.10-${{ runner.os }}-
+            ccache-nothing-5.10-
+      
+      - name: 初始化并配置ccache
+        run: |
+          # 设置ccache环境变量
+          export CCACHE_COMPILERCHECK="none"
+          export CCACHE_BASEDIR="${{ github.workspace }}"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          export CCACHE_MAXSIZE="${{ env.CCACHE_MAXSIZE }}"
+          
+          # 确保ccache目录存在
+          mkdir -p "$CCACHE_DIR"
+          
+          # 每次运行都重新配置缓存大小
+          echo "配置ccache缓存大小为: $CCACHE_MAXSIZE"
+          ccache -M "$CCACHE_MAXSIZE"
+          ccache -o compression=true
+          
+          # 显示初始缓存状态
+          echo "ccache初始状态:"
+          ccache -s
+          
+          # 如果缓存恢复命中，显示详细信息
+          if [ "${{ steps.ccache-restore.outputs.cache-hit }}" == 'true' ]; then
+            echo "ccache缓存命中详情:"
+            ccache -sv
+          fi
+
+      - name: 克隆依赖项目
+        run: |
+          cd kernel_workspace
+          # AnyKernel3
+          git clone https://github.com/WildKernels/AnyKernel3.git -b gki-2.0 --depth=1 &
+          
+          # SUSFS
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }} --depth=1 &
+          
+          # 内核补丁
+          git clone https://github.com/WildKernels/kernel_patches.git --depth=1 &
+          
+          # SukiSU 补丁
+          git clone https://github.com/ShirkNeko/SukiSU_patch.git --depth=1 &
+          
+          wait
+          echo "依赖项目克隆完成"
+
+      - name: 添加KernelSU
+        id: ksu_version
+        run: |
+          cd kernel_workspace
+          
+          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
+            echo "正在配置SukiSU Ultra..."
+            curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s susfs-main
+            cd ./KernelSU
+            # 获取当前 Git 提交的短哈希 (8位)
+            GIT_COMMIT_HASH=$(git rev-parse --short=8 HEAD)
+            echo "当前提交哈希: $GIT_COMMIT_HASH"
+            export KSU_VERSION=$KSU_VERSION
+            # 尝试最多 3 次获取 KernelSU API 版本号
+            for i in {1..3}; do
+              # 从远程 Makefile 中提取 KSU_API_VERSION
+              KSU_API_VERSION=$(curl -s "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/susfs-main/kernel/Makefile" | 
+                # 查找第一个包含版本定义的行
+                grep -m1 "KSU_VERSION_API :=" | 
+                # 提取等号后的值
+                awk -F'= ' '{print $2}' | 
+                # 删除所有空白字符
+                tr -d '[:space:]')
+              # 如果成功获取到版本号则跳出循环，否则等待 1 秒后重试
+              [ -n "$KSU_API_VERSION" ] && break || sleep 1
+            done
+            # 如果获取失败，使用默认版本号 3.1.7
+            [ -z "$KSU_API_VERSION" ] && KSU_API_VERSION="3.1.7"
+            # 将 API 版本号存储到 GitHub 环境变量
+            echo "KSU_API_VERSION=$KSU_API_VERSION" >> $GITHUB_ENV
+            # 创建版本定义模板&版本格式函数: 使用获取的提交哈希和固定后缀
+            # KSU_VERSION_API: API 版本定义
+            # KSU_VERSION_FULL: 完整版本定义
+            VERSION_DEFINITIONS=$'define get_ksu_version_full\nv\\$1-'"$GIT_COMMIT_HASH"$'@nothing\nendef\n\nKSU_VERSION_API := '"$KSU_API_VERSION"$'\nKSU_VERSION_FULL := v'"$KSU_API_VERSION"$'-'"$GIT_COMMIT_HASH"$'@nothing'
+            # 清理内核 Makefile 中的旧版本定义
+            # 删除版本函数
+            sed -i '/define get_ksu_version_full/,/endef/d' kernel/Makefile
+            # 删除 API 版本定义
+            sed -i '/KSU_VERSION_API :=/d' kernel/Makefile
+            # 删除完整版本定义
+            sed -i '/KSU_VERSION_FULL :=/d' kernel/Makefile
+            # 在 REPO_OWNER 行后插入新版本定义
+            awk -v def="$VERSION_DEFINITIONS" '
+              # 当找到 REPO_OWNER 行时，插入版本定义并设置标记
+              /REPO_OWNER :=/ {print; print def; inserted=1; next}
+              # 打印所有行
+              1
+              # 如果未找到插入点，在文件末尾追加
+              END {if (!inserted) print def}
+            ' kernel/Makefile > kernel/Makefile.tmp && mv kernel/Makefile.tmp kernel/Makefile
+
+            # 生成自定义版本号（基于提交计数）, 失败时使用 114514
+            KSU_VERSION=$(expr $(git rev-list --count main) + 10700 2>/dev/null || echo 114514)
+            # 存储版本号到 GitHub 环境变量
+            echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+            echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
+
+            # 验证修改结果
+            grep -A10 "REPO_OWNER" kernel/Makefile  # 检查插入点后的内容
+            grep "KSU_VERSION_FULL" kernel/Makefile # 确认版本定义存在
+            echo "SukiSU版本号: v${KSU_API_VERSION}-${GIT_COMMIT_HASH}@nothing"
+          else
+            echo "正在配置KernelSU Next..."
+            curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/next-susfs/kernel/setup.sh" | bash -s next-susfs
+            cd KernelSU-Next
+            KSU_VERSION=$(expr $(curl -sI "https://api.github.com/repos/pershoot/KernelSU-Next/commits?sha=next&per_page=1" | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p') "+" 10200)
+            echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+            echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
+            sed -i "s/DKSU_VERSION=11998/DKSU_VERSION=${KSU_VERSION}/" kernel/Makefile
+            echo "KernelSU Next版本: $KSU_VERSION"
+          fi
+
+      - name: 应用 KernelSU & SUSFS 补丁
+        run: |
+          cd kernel_workspace
+          
+          # 复制SUSFS文件
+          cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
+          cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
+          cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+          
+          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
+            echo "正在添加SukiSU Ultra补丁..."
+            if [[ ${{ github.event.inputs.hook_method }} == "manual" ]]; then
+              cp ./SukiSU_patch/hooks/scope_min_manual_hooks_v1.5.patch ./common/
+            fi
+            if [[ ${{ github.event.inputs.hook_method }} == "syscall" ]]; then
+              cp ./SukiSU_patch/hooks/syscall_hooks.patch ./common/
+            fi
+            cp ./SukiSU_patch/69_hide_stuff.patch ./common/
+          else
+            echo "正在添加KernelSU Next补丁..."
+            if [[ ${{ github.event.inputs.hook_method }} == "manual" ]]; then
+              cp ./kernel_patches/next/scope_min_manual_hooks_v1.5.patch ./common/
+            fi
+            if [[ ${{ github.event.inputs.hook_method }} == "syscall" ]]; then
+              cp ./kernel_patches/next/syscall_hooks.patch ./common/
+            fi
+            cp ./kernel_patches/69_hide_stuff.patch ./common/
+          fi
+          
+          cd ./common
+          patch -p1 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
+          
+          if [[ ${{ github.event.inputs.hook_method }} == "manual" ]]; then
+            if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
+              patch -p1 < scope_min_manual_hooks_v1.5.patch || true
+            else
+              patch -p1 -N -F 3 < scope_min_manual_hooks_v1.5.patch || true
+            fi
+          fi
+          
+          if [[ ${{ github.event.inputs.hook_method }} == "syscall" ]]; then
+            patch -p1 < syscall_hooks.patch || true
+          fi
+          
+          patch -p1 < 69_hide_stuff.patch || true
+          
+          # 为KernelSU Next添加WildKSU管理器支持
+          if [[ ${{ github.event.inputs.ksu_type }} == "ksunext" ]]; then
+            cd ./drivers/kernelsu
+            wget https://github.com/WildKernels/kernel_patches/raw/refs/heads/main/next/susfs_fix_patches/v1.5.12/fix_apk_sign.c.patch
+            patch -p2 -N -F 3 < fix_apk_sign.c.patch || true
+          fi
+
+      - name: 添加 KSU & SUSFS 配置项
+        run: |
+          cd kernel_workspace
+          echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          if [[ ${{ github.event.inputs.kpm_enable }} == 'true' && ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
+            echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          fi
+          if [ "${{ github.event.inputs.hook_method }}" == "kprobes" ]; then
+            echo "正在开启kprobes钩子..."
+            echo "CONFIG_KSU_SUSFS_SUS_SU=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+            echo "CONFIG_KSU_MANUAL_HOOK=n" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+            echo "CONFIG_KSU_KPROBES_HOOK=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          else
+            echo "正在开启manual/syscall钩子..."
+            echo "CONFIG_KSU_MANUAL_HOOK=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+            echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          fi
+          echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          #添加对 Mountify (backslashxx/mountify) 模块的支持
+          echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          # 构建优化配置
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=n" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_LTO_CLANG_THIN=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_LTO_CLANG=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          echo "CONFIG_OPTIMIZE_INLINING=y" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+          #禁用 defconfig 检查
+          sed -i 's/check_defconfig//' ./common/build.config.gki
+          #跳过将uapi标准头安装到 usr/include 目录的不必要操作，节省编译时间
+          echo "CONFIG_HEADERS_INSTALL=n" >> ./common/arch/arm64/configs/vendor/meteoric_defconfig
+
+      - name: 添加制作名称
+        run: |
+          cd kernel_workspace
+          echo "替换内核版本后缀..."
+          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
+            echo "当前内核版本后缀：${{ github.event.inputs.kernel_suffix }}"
+            for f in ./common/scripts/setlocalversion; do
+              sed -i "\$s|echo \"\\\$res\"|echo \"-${{ github.event.inputs.kernel_suffix }}\"|" "$f"
+            done
+          else
+            echo "当前内核版本后缀：${{ env.KERNEL_NAME }}"
+            for f in ./common/scripts/setlocalversion; do
+              sed -i "\$s|echo \"\\\$res\"|echo \"-${{ env.KERNEL_NAME }}\"|" "$f"
+            done
+          fi
+
+      - name: 构建内核
+        run: |
+          WORKDIR="$(pwd)"
+          export PATH="/usr/lib/ccache:$PATH"
+          export PATH="$WORKDIR/kernel_workspace/clang20/bin:$PATH"
+          export PATH="$WORKDIR/kernel_workspace/build-tools/bin:$PATH"
+          CLANG_DIR="$WORKDIR/kernel_workspace/clang20/bin"
+          CLANG_VERSION="$($CLANG_DIR/clang --version | head -n 1)"
+          LLD_VERSION="$($CLANG_DIR/ld.lld --version | head -n 1)"
+          echo "编译器信息:"
+          echo "Clang版本: $CLANG_VERSION"
+          echo "LLD版本: $LLD_VERSION"
+          pahole_version=$(pahole --version 2>/dev/null | head -n1); [ -z "$pahole_version" ] && echo "pahole版本：未安装" || echo "pahole版本：$pahole_version"
+          
+          export CCACHE_LOGFILE="${{ github.workspace }}/kernel_workspace/ccache.log"
+          export CCACHE_COMPILERCHECK="none"
+          export CCACHE_BASEDIR="${{ github.workspace }}"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          export CCACHE_MAXSIZE="3G"
+          echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "$CCACHE_DIR/ccache.conf"
+          
+          cd kernel_workspace/common
+          
+          # 设置目标编译时间戳
+          BUILD_TIMESTAMP="2024-12-11 21:50:47"
+          export SOURCE_DATE_EPOCH=$(date -d "$BUILD_TIMESTAMP" +%s)
+          export KBUILD_BUILD_TIMESTAMP="$BUILD_TIMESTAMP"
+          
+          # 安装 faketime 工具
+          sudo apt-get update && sudo apt-get install -y faketime
+          
+          # 直接修改内核时间戳相关源码文件
+          echo "正在修改内核源码中的时间戳..."
+          
+          # 1. 修改 scripts/mkcompile_h 脚本
+          if [ -f scripts/mkcompile_h ]; then
+            cp scripts/mkcompile_h scripts/mkcompile_h.bak
+            # 替换所有日期命令为固定时间
+            sed -i 's/`date`/echo "Wed Dec 11 21:50:47 UTC 2024"/' scripts/mkcompile_h
+            sed -i 's/`LC_ALL=C date`/echo "Wed Dec 11 21:50:47 UTC 2024"/' scripts/mkcompile_h
+            sed -i 's/$(date)/echo "Wed Dec 11 21:50:47 UTC 2024"/' scripts/mkcompile_h
+            sed -i 's/\$DATE/echo "Wed Dec 11 21:50:47 UTC 2024"/' scripts/mkcompile_h
+          fi
+          
+          # 2. 创建固定的编译时间头文件
+          mkdir -p include/generated
+          cat > include/generated/compile.h << 'EOF'
+          /* This file is auto generated, version 1 */
+          /* SMP PREEMPT */
+          #define UTS_MACHINE "aarch64"
+          #define UTS_VERSION "#1 Wed Dec 11 21:50:47 UTC 2024"
+          #define LINUX_COMPILE_BY "root"
+          #define LINUX_COMPILE_HOST "localhost"  
+          #define LINUX_COMPILE_DOMAIN "(none)"
+          #define LINUX_COMPILE_TIME "21:50:47"
+          #define LINUX_COMPILE_DATE "Dec 11 2024"
+          #define LINUX_COMPILER "clang version 20.0.0git"
+          EOF
+          
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_TIMESTAMP=$BUILD_TIMESTAMP" >> $GITHUB_ENV
+          # 验证时间戳设置
+          echo "--- 确定性构建时间戳设置完成 ---"
+          echo "SOURCE_DATE_EPOCH: $SOURCE_DATE_EPOCH"
+          echo "KBUILD_BUILD_TIMESTAMP: $KBUILD_BUILD_TIMESTAMP" 
+          echo "目标时间戳: Wed Dec 11 21:50:47 UTC 2024"
+          echo "当前系统时间: $(date)"
+          echo "faketime测试: $(faketime '2024-12-11 21:50:47' date)"
+          
+          #在构建内核的同时清除不必要的.NET, Android NDK, Haskell, CodeQL运行库，清理空间且不阻塞后续步骤运行
+          sudo rm -rf /usr/share/dotnet &
+          sudo rm -rf /usr/local/lib/android &
+          sudo rm -rf /opt/ghc &
+          sudo rm -rf /opt/hostedtoolcache/CodeQL &
+          # 使用确定性构建时间戳进行编译
+          echo "--- 开始确定性构建 ---"
+          
+          # 第一步：生成配置（不需要时间戳）
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out \
+            KCFLAGS+=-O2 KCFLAGS+=-Wno-error vendor/meteoric_defconfig
+          
+          # 第二步：使用 faketime 进行实际编译以确保时间戳一致性
+          echo "正在使用 faketime 进行编译..."
+          faketime '2024-12-11 21:50:47' \
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out \
+            KCFLAGS+=-O2 KCFLAGS+=-Wno-error \
+            KBUILD_BUILD_TIMESTAMP="Wed Dec 11 21:50:47 UTC 2024" \
+            Image
+          
+          # 验证编译结果中的时间戳
+          echo "--- 编译完成，验证时间戳 ---"
+          if [ -f out/include/generated/compile.h ]; then
+            echo "编译时间戳验证:"
+            grep -E "UTS_VERSION|LINUX_COMPILE_(TIME|DATE)" out/include/generated/compile.h || echo "compile.h中未找到时间戳定义"
+          fi
+          echo "内核编译完成！"
+          echo "ccache状态："
+          ccache -s
+          echo "编译后空间:"
+          df -h
+
+      - name: 应用KPM并修补内核
+        run: |
+          if [[ ${{ github.event.inputs.kpm_enable }} == 'true' && ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
+            echo "正在应用KPM并修补内核..."
+            cd kernel_workspace/common/out/arch/arm64/boot
+            curl -LO https://github.com/ShirkNeko/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux
+            chmod +x patch_linux
+            ./patch_linux
+            rm -f Image
+            mv oImage Image
+          fi
+          
+      - name: 克隆 AnyKernel3 并打包
+        run: |
+          cd kernel_workspace
+          rm -rf ./AnyKernel3/.git
+          cd AnyKernel3
+          cp ../common/out/arch/arm64/boot/Image ./Image
+          if [[ ! -f ./Image ]]; then
+            echo "未找到内核镜像文件，构建可能出错"
+            exit 1
+          fi
+          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
+            KSU_TYPENAME="SukiSU"
+          else
+            KSU_TYPENAME="KSUNext"
+          fi
+          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
+            zip -r ../AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_NothingPhone2_${{ github.event.inputs.kernel_suffix }}.zip ./*
+          else
+            zip -r ../AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_NothingPhone2_${{ env.KERNEL_NAME }}.zip ./*
+          fi
+
+      - name: 上传 ZIP 工件
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel_ZIP_Artifacts
+          path: ${{ github.workspace }}/kernel_workspace/AnyKernel*.zip
+
+      - name: 生成构建摘要
+        run: |
+          echo "# Nothing Phone 2 内核构建完成" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 构建信息" >> $GITHUB_STEP_SUMMARY
+          echo "- **设备**: Nothing Phone 2" >> $GITHUB_STEP_SUMMARY
+          echo "- **Android版本**: 12" >> $GITHUB_STEP_SUMMARY
+          echo "- **内核版本**: 5.10" >> $GITHUB_STEP_SUMMARY
+          echo "- **KernelSU类型**: ${{ github.event.inputs.ksu_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **KSU版本**: ${{ env.KSUVER }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Hook模式**: ${{ github.event.inputs.hook_method }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **KPM支持**: ${{ github.event.inputs.kpm_enable }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **SUSFS版本**: v1.5.12" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 构建产物" >> $GITHUB_STEP_SUMMARY
+          ls -la kernel_workspace/AnyKernel*.zip | awk '{print "- **" $9 "**"}' >> $GITHUB_STEP_SUMMARY
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+      
+    steps:
+      - name: 下载 ZIP 工件
+        uses: actions/download-artifact@v4
+        with:
+          name: Kernel_ZIP_Artifacts
+          path: ./release_zips
+
+      - name: 设置环境变量
+        run: |
+          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
+            FULL_VERSION=${{ format('{0}-{1}', env.KERNEL_VERSION, github.event.inputs.kernel_suffix) }}
+            echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
+            export FULL_VERSION=$FULL_VERSION
+          else
+            FULL_VERSION=${{ format('{0}-{1}', env.KERNEL_VERSION, env.KERNEL_NAME) }}
+            echo "FULL_VERSION=$FULL_VERSION" >> $GITHUB_ENV
+            export FULL_VERSION=$FULL_VERSION
+          fi
+          TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
+          TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
+          echo "TIME=$TIME" >> $GITHUB_ENV
+          echo "TIME_FORM=$TIME_FORM" >> $GITHUB_ENV
+          TAG_HEAD="Nothing-Phone2-build"
+          echo "TAG_HEAD=$TAG_HEAD" >> $GITHUB_ENV
+          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
+            KSU_BRANCH="SukiSU Ultra"
+          else
+            KSU_BRANCH="KernelSU Next"
+          fi
+          echo "KSU_BRANCH=$KSU_BRANCH" >> $GITHUB_ENV
+         
+      - name: 创建发布
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "${{ env.TAG_HEAD }}-${{ env.TIME }}"
+          name: "${{ env.TAG_HEAD }}-${{ env.KSU_BRANCH }}-${{ env.TIME }}"
+          body: |
+            ### 📱 Nothing Phone 2 ${{ env.KSU_BRANCH }} 内核 | 构建信息
+            - 内核版本号: ${{ env.FULL_VERSION }}
+            - 真实内核版本：5.10.237
+            - 真实编译时间: ${{ env.TIME_FORM }}
+            - 机型：Nothing Phone 2 (android12-5.10)
+            - 特性：${{ env.KSU_BRANCH }} + SUSFS + KPM
+            - hook模式：${{ github.event.inputs.hook_method }}
+            - KPM支持 (仅对sukisu生效)：${{ github.event.inputs.kpm_enable }}
+            - TESTED ON: Nothing Phone 2 Nothing OS 3.2 stock ROM
+            - SukiSU Ultra管理器下载：[SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases)
+            - KernelSU Next管理器下载：[KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next/releases)
+            - Wild KSU管理器下载(兼容KernelSU Next)：[Wild-KSU](https://github.com/WildKernels/Wild_KSU/releases)
+            ### ⏫️ 更新内容：
+            - 更新${{ env.KSU_BRANCH }}至最新版本${{ needs.build.outputs.ksuver }}
+            ### 📋 安装方法 | Installation Guide
+            1. 若你的手机已经安装了第三方Recovery（如TWRP,OrangeFox)，可下载对应机型的AnyKernel刷机包后进入Recovery模式，通过Recovery刷入刷机包后重启设备
+            2. 若你的手机之前已有 root 权限，可在手机上安装[HorizonKernelFlasher](https://github.com/libxzr/HorizonKernelFlasher/releases)，在HorizonKernelFlasher中刷入AnyKernel刷机包并重启
+            3. 若你之前已刷入对应KSU内核，且KSU管理器已更新至最新版本，可在KSU管理器中直接刷入AnyKernel刷机包并重启
+            #### ※※※刷写内核有风险，为防止出现意外导致手机变砖，在刷入内核前请务必用[KernelFlasher](https://github.com/capntrips/KernelFlasher)等软件备份boot等关键启动分区!※※※
+          draft: false
+          prerelease: true
+          files: |
+            release_zips/AnyKernel3_*.zip
