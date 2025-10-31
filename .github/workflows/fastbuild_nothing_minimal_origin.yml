@@ -385,7 +385,7 @@ jobs:
             echo "未找到内核镜像文件，构建可能出错"
             exit 1
           fi
-          KERNEL_FINGERPRINT=$(strings Image | grep "Linux version")
+          KERNEL_FINGERPRINT=$(strings Image | grep "Linux version" | sed -n '1p')
           echo "KERNEL_FINGERPRINT=$KERNEL_FINGERPRINT" >> $GITHUB_ENV
           strings Image | grep "Linux version"
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
