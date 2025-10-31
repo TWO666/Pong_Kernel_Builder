@@ -38,8 +38,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    outputs:
+    outputs:  # 更新 outputs
       ksuver: ${{ steps.ksu_version.outputs.ksuver }}
+      kernel_fingerprint: ${{ steps.package.outputs.kernel_fingerprint }}  # 新增
 
     steps:
       - name: 安装环境依赖+初始化源码仓库及llvm-Clang20工具链
@@ -376,6 +377,7 @@ jobs:
           fi
           
       - name: 克隆 AnyKernel3 并打包
+        id: package
         run: |
           cd kernel_workspace
           rm -rf ./AnyKernel3/.git
@@ -387,6 +389,7 @@ jobs:
           fi
           KERNEL_FINGERPRINT=$(strings Image | grep "Linux version" | sed -n '1p')
           echo "KERNEL_FINGERPRINT=$KERNEL_FINGERPRINT" >> $GITHUB_ENV
+          echo "kernel_fingerprint=$KERNEL_FINGERPRINT" >> $GITHUB_OUTPUT
           strings Image | grep "Linux version"
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
             KSU_TYPENAME="SukiSU"
@@ -457,7 +460,7 @@ jobs:
           body: |
             ### 📱 Nothing Phone 2 ${{ env.KSU_BRANCH }} 内核 | 构建信息
             - 机型：Nothing Phone 2 (android12-5.10)
-            - 指纹：${{ env.KERNEL_FINGERPRINT }}
+            - 指纹：${{ needs.build.outputs.kernel_fingerprint }}
             - 特性：${{ env.KSU_BRANCH }} + SUSFS + KPM
             - hook模式：${{ github.event.inputs.hook_method }}
             - KPM支持 (仅对sukisu生效)：${{ github.event.inputs.kpm_enable }}
